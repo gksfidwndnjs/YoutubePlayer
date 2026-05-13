@@ -1,0 +1,16 @@
+{
+  "name": "youtube-player",
+  "version": "1.0.0",
+  "description": "YouTube player desktop app",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^35.0.0"
+  },
+  "dependencies": {
+    "@fontsource/press-start-2p": "^5.2.7",
+    "youtube-dl-exec": "^3.1.6"
+  }
+}

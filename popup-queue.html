@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    body { overflow: hidden; }
+    #popup-queue { display: flex; flex-direction: column; height: 100vh; }
+    #popup-queue-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 14px; background: var(--surface);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    #current-playlist-label {
+      flex: 1; font-size: 11px; color: var(--text);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #queue-list { flex: 1; overflow-y: auto; background: var(--bg); }
+  </style>
+</head>
+<body>
+<div id="popup-queue">
+  <div id="popup-queue-header">
+    <span id="current-playlist-label">Queue</span>
+    <span id="queue-count" class="count-badge">0</span>
+    <button id="clear-queue-btn" class="btn-ghost">Clear</button>
+  </div>
+  <div id="queue-list">
+    <div class="empty-state">Your queue is empty</div>
+  </div>
+</div>
+<script src="popup-queue.js"></script>
+</body>
+</html>

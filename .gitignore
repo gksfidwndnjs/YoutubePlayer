@@ -1,0 +1,8 @@
+node_modules/
+.claude/
+*.log
+dist/
+build/
+
+# Cached YouTube player scripts
+1778*.js

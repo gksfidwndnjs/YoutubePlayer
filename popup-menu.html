@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    html, body { background: transparent; margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    #popup-frame {
+      height: 100%; display: flex; flex-direction: column;
+      background-color: var(--bg);
+      background-image: var(--metal-shine);
+      border-radius: 18px; overflow: hidden;
+      border: 1px solid transparent; background-clip: padding-box;
+    }
+    .popup-section-hdr {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 14px; flex-shrink: 0;
+      border-top: 1px solid rgba(255,255,255,0.10);
+      border-bottom: 1px solid rgba(0,0,0,0.35);
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+      color: var(--text); text-shadow: 0 1px 3px rgba(0,0,0,0.95);
+    }
+    .popup-section-hdr .label-hint { font-size: 9px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-muted); }
+    .popup-section-body { padding: 10px 14px; }
+    #search-results { max-height: 260px; overflow-y: auto; margin-top: 4px; }
+    input[type="text"] {
+      background-image:
+        repeating-linear-gradient(0deg, transparent 0px, transparent 3px, rgba(0,0,0,0.13) 3px, rgba(0,0,0,0.13) 4px),
+        linear-gradient(180deg, #0c120e 0%, #0f1a10 100%);
+      background-color: #0c120e;
+      color: #00e857;
+      text-shadow: 0 0 6px rgba(0,232,87,0.7);
+      border: 1px solid rgba(0,0,0,0.55);
+      border-top-color: rgba(0,255,80,0.12);
+      box-shadow: inset 2px 2px 5px rgba(0,0,0,0.7), inset -1px -1px 2px rgba(0,255,80,0.04), 0 0 8px rgba(0,232,87,0.08);
+      caret-color: #00e857;
+    }
+    input[type="text"]::placeholder { color: rgba(0,232,87,0.3); text-shadow: none; }
+    input[type="text"]:focus { outline: none; border-color: rgba(0,232,87,0.3); }
+  </style>
+</head>
+<body>
+<div id="popup-frame">
+  <div class="popup-section-hdr">Add by URL</div>
+  <div class="popup-section-body">
+    <div class="input-row">
+      <input id="url-input" type="text" placeholder="Video URL, ID, or playlist URL…" spellcheck="false">
+      <button id="url-add-btn" class="btn-3d">Add</button>
+    </div>
+  </div>
+
+  <div class="popup-section-hdr">
+    Search
+    <span class="label-hint">(API key required)</span>
+  </div>
+  <div class="popup-section-body">
+    <div class="input-row">
+      <input id="search-input" type="text" placeholder="Search YouTube…" spellcheck="false">
+      <button id="search-btn" class="btn-icon btn-3d">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="6"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </button>
+    </div>
+    <div id="search-no-key" class="info-banner hidden">
+      <span>Set an API key in Settings.</span>
+    </div>
+    <div id="search-results"></div>
+  </div>
+</div>
+<script src="popup-menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YT Player</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<audio id="youtube-player"></audio>
+
+<div id="app">
+
+  <div id="content">
+
+    <main id="main">
+      <div id="player-area">
+
+        <!-- Playlist panel -->
+        <div id="playlist-panel">
+          <div id="playlist-panel-header">
+            <div class="playlist-selector" id="playlist-selector">
+              <button id="playlist-dropdown-btn" class="playlist-crt-btn">
+                <div id="playlist-display-title">Queue</div>
+                <div id="playlist-display-meta">(0/0)</div>
+              </button>
+              <div id="playlist-dropdown-menu" class="dropdown-menu hidden">
+                <div class="dropdown-item active" id="dropdown-queue-item">Queue</div>
+                <div id="playlist-items-container"></div>
+                <div class="dropdown-divider"></div>
+                <button id="open-add-playlist-btn" class="dropdown-new-btn">+ Add Playlist</button>
+              </div>
+            </div>
+            <span id="key-indicator" class="key-dot no-key" title="API Key status"></span>
+            <button id="playlist-panel-toggle" class="btn-icon btn-3d panel-toggle-btn" title="Toggle playlist">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="18 15 12 9 6 15"/>
+              </svg>
+            </button>
+          </div>
+          <div id="queue-list">
+            <div class="empty-state">Your queue is empty</div>
+          </div>
+        </div>
+
+        <!-- Player bar — always visible -->
+        <div id="player-bar">
+          <div id="player-bar-main">
+
+            <div id="player-disc">
+              <div id="album-placeholder">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="#555" stroke-width="1.5"/>
+                  <circle cx="12" cy="12" r="3" fill="#555"/>
+                </svg>
+              </div>
+              <img id="album-art" src="" alt="">
+            </div>
+
+            <div id="player-right">
+              <div id="player-actions">
+                <button id="pin-btn" class="btn-icon btn-3d" title="Always on top">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6h2v-6h5v-2l-2-2z"/></svg>
+                </button>
+                <button id="add-search-toggle" class="btn-icon btn-3d" title="Add / Search">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="6"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                </button>
+                <button id="settings-btn" class="btn-icon btn-3d" title="Settings">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                  </svg>
+                </button>
+                <div class="actions-sep"></div>
+                <button id="minimize-btn" class="btn-icon btn-3d wm-btn" title="Minimize">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+                <button id="close-btn" class="btn-icon btn-3d wm-btn wm-close" title="Close">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+
+              <div id="player-info">
+                <div id="video-title">NULL</div>
+                <div id="video-channel">NULL</div>
+              </div>
+
+              <div id="player-controls">
+                <button id="prev-btn" class="ctrl-btn btn-3d" title="Previous (←)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M17 18L7 12 17 6v12zm-11 0V6"/></svg>
+                </button>
+                <button id="playpause-btn" class="ctrl-btn ctrl-btn-main btn-3d" title="Play (Space)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                </button>
+                <button id="next-btn" class="ctrl-btn btn-3d" title="Next (→)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M7 18l10-6L7 6v12zm11 0V6"/></svg>
+                </button>
+              </div>
+            </div>
+
+          </div>
+          <div id="player-bar-bottom">
+            <div id="time-display">
+              <span id="time-current">0:00</span>
+              <span class="time-sep"> / </span>
+              <span id="time-duration">0:00</span>
+            </div>
+            <input id="progress-bar" type="range" min="0" max="100" value="0" step="0.1">
+            <button id="mute-btn" class="btn-icon btn-3d" title="Mute">
+              <svg id="volume-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+            </button>
+            <input id="volume-bar" type="range" min="0" max="1" value="1" step="0.01" style="width:70px">
+          </div>
+        </div>
+
+      </div>
+    </main>
+
+  </div>
+
+</div>
+
+<!-- Add Playlist Modal -->
+<div id="add-playlist-modal" class="modal hidden">
+  <div class="modal-backdrop" id="add-playlist-backdrop"></div>
+  <div class="modal-box">
+    <h2>Add Playlist</h2>
+    <div class="settings-row">
+      <div class="settings-label">YouTube Playlist URL</div>
+      <div class="settings-field-row" style="margin-top:8px">
+        <input id="add-playlist-url" type="text" placeholder="https://youtube.com/playlist?list=…">
+        <button id="add-playlist-fetch-btn" class="btn-secondary">Fetch</button>
+      </div>
+    </div>
+    <div id="add-playlist-preview" class="hidden">
+      <div class="settings-row" style="margin-top:14px">
+        <div class="settings-label">Name</div>
+        <input id="add-playlist-name" type="text" placeholder="Playlist name" style="margin-top:8px">
+      </div>
+      <div class="settings-hint" id="add-playlist-info" style="margin-top:6px"></div>
+    </div>
+    <div class="modal-actions" style="margin-top:20px">
+      <button id="add-playlist-save-btn" disabled>Save</button>
+      <button id="add-playlist-cancel-btn" class="btn-secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
