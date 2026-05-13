@@ -1,7 +1,9 @@
 const { app, BrowserWindow, ipcMain, session, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const youtubeDl = require('youtube-dl-exec');
+const { create: createYoutubeDl } = require('youtube-dl-exec');
+
+let youtubeDl;
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
@@ -47,7 +49,7 @@ let menuBlurClosedAt = 0;
 ipcMain.on('open-menu-popup', (event) => {
   const mw = BrowserWindow.fromWebContents(event.sender);
   if (Date.now() - menuBlurClosedAt < 300) return;
-  openPopup(popups.menu, 'popup-menu.html', 420, mw, {
+  openPopup(popups.menu, path.join(__dirname, 'renderer/popups/menu.html'), 420, mw, {
     onLoad: () => mw.webContents.send('send-menu-state'),
     onBlur: () => {
       if (popups.menu.win && !popups.menu.win.isDestroyed()) {
@@ -74,7 +76,7 @@ let settingsBlurClosedAt = 0;
 ipcMain.on('open-settings-popup', (event) => {
   const mw = BrowserWindow.fromWebContents(event.sender);
   if (Date.now() - settingsBlurClosedAt < 300) return;
-  openPopup(popups.settings, 'popup-settings.html', 380, mw, {
+  openPopup(popups.settings, path.join(__dirname, 'renderer/popups/settings.html'), 380, mw, {
     onLoad: () => mw.webContents.send('send-settings-state'),
     onBlur: () => {
       if (popups.settings.win && !popups.settings.win.isDestroyed()) {
@@ -97,7 +99,7 @@ let playlistBlurClosedAt = 0;
 ipcMain.on('open-playlist-popup', (event) => {
   const mw = BrowserWindow.fromWebContents(event.sender);
   if (Date.now() - playlistBlurClosedAt < 300) return;
-  openPopup(popups.playlist, 'popup-playlist.html', 280, mw, {
+  openPopup(popups.playlist, path.join(__dirname, 'renderer/popups/playlist.html'), 280, mw, {
     onLoad:   () => mw.webContents.send('send-playlist-state'),
     onBlur:   () => {
       if (popups.playlist.win && !popups.playlist.win.isDestroyed()) {
@@ -105,7 +107,6 @@ ipcMain.on('open-playlist-popup', (event) => {
         popups.playlist.win.close();
       }
     },
-    onClosed: () => mw.webContents.send('popup-closed', 'playlist'),
   });
 });
 
@@ -114,6 +115,17 @@ ipcMain.on('push-playlist-state', (_, state) => sendToPopup(popups.playlist, 'pl
 ipcMain.on('popup-action', (_, action) => mainWindow?.webContents.send('popup-action', action));
 
 // ── Window shape ──────────────────────────────────────────────────────────
+
+function getWinScaleFactor(win) {
+  const { x, y, width, height } = win.getBounds();
+  const center = { x: x + Math.round(width / 2), y: y + Math.round(height / 2) };
+  return screen.getDisplayNearestPoint(center).scaleFactor || 1;
+}
+
+function setWinShape(win, w, h) {
+  const sf = getWinScaleFactor(win);
+  win.setShape(roundedRectShape(Math.round(w * sf), Math.round(h * sf), Math.round(18 * sf)));
+}
 
 function roundedRectShape(width, height, radius) {
   const rects = [];
@@ -136,7 +148,7 @@ ipcMain.on('set-exact-height', (event, h) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const { x, y, width, height } = win.getBounds();
   win.setBounds({ x, y: y + (height - h), width, height: h });
-  win.setShape(roundedRectShape(width, h, 18));
+  setWinShape(win, width, h);
 });
 
 ipcMain.on('resize-window', (event, delta) => {
@@ -144,7 +156,7 @@ ipcMain.on('resize-window', (event, delta) => {
   const { x, y, width, height } = win.getBounds();
   const newHeight = height + delta;
   win.setBounds({ x, y: y - delta, width, height: newHeight });
-  win.setShape(roundedRectShape(width, newHeight, 18));
+  setWinShape(win, width, newHeight);
 });
 
 ipcMain.on('minimize-window', (event) => BrowserWindow.fromWebContents(event.sender).minimize());
@@ -231,26 +243,44 @@ function createWindow() {
     },
   });
 
-  win.setShape(roundedRectShape(winWidth, winHeight, 18));
+  setWinShape(win, winWidth, winHeight);
 
+  let moveTimer = null;
   win.on('moved', () => {
-    const bounds = win.getBounds();
-    const center = { x: bounds.x + Math.round(bounds.width / 2), y: bounds.y + Math.round(bounds.height / 2) };
-    const display = screen.getDisplayNearestPoint(center);
-    const newWidth = Math.round(display.workAreaSize.width / 5);
-    if (newWidth !== bounds.width) {
-      win.setSize(newWidth, bounds.height);
-      win.setShape(roundedRectShape(newWidth, bounds.height, 18));
-    }
+    const b = win.getBounds();
+    // 즉시 shape 갱신 (DPI 클리핑 방지)
+    setWinShape(win, b.width, b.height);
+    // 드래그 완료 후 새 모니터 기준으로 크기 재조정
+    clearTimeout(moveTimer);
+    moveTimer = setTimeout(() => {
+      const fb = win.getBounds();
+      const center = { x: fb.x + Math.round(fb.width / 2), y: fb.y + Math.round(fb.height / 2) };
+      const display = screen.getDisplayNearestPoint(center);
+      const { x: dx, y: dy, width: dw, height: dh } = display.workArea;
+      const newW = Math.round(dw / 5);
+      const newH = fb.height; // 높이는 현재값 유지
+      const newX = Math.max(dx, Math.min(fb.x, dx + dw - newW));
+      const newY = Math.max(dy, Math.min(fb.y, dy + dh - newH));
+      if (newW !== fb.width || newX !== fb.x || newY !== fb.y) {
+        win.setBounds({ x: newX, y: newY, width: newW, height: newH });
+        setWinShape(win, newW, newH);
+      }
+    }, 300);
   });
 
-  win.loadFile('index.html');
+  win.loadFile(path.join(__dirname, 'renderer/index.html'));
   mainWindow = win;
 }
 
 app.whenReady().then(() => {
   settingsPath  = path.join(app.getPath('userData'), 'settings.json');
   playlistsPath = path.join(app.getPath('userData'), 'playlists.json');
+
+  const binName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
+  const ytDlpPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'youtube-dl-exec', 'bin', binName)
+    : path.join(__dirname, '../node_modules/youtube-dl-exec/bin', binName);
+  youtubeDl = createYoutubeDl(ytDlpPath);
   session.defaultSession.setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
   );

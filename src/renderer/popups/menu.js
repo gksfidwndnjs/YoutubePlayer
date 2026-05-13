@@ -1,6 +1,6 @@
 'use strict';
 const { ipcRenderer } = require('electron');
-const { applyMetalTexture } = require('./texture');
+const { applyMetalTexture } = require('../texture');
 document.addEventListener('DOMContentLoaded', () => applyMetalTexture([document.getElementById('popup-frame')]));
 
 let apiKey = '';
@@ -42,7 +42,7 @@ ipcRenderer.on('search-results', (_, items) => {
     const card = document.createElement('div');
     card.className = 'video-card';
     card.innerHTML = `
-      <img class="video-thumb" src="https://img.youtube.com/vi/${esc(item.videoId)}/mqdefault.jpg" alt="" loading="lazy">
+      <img class="video-thumb" src="https://img.youtube.com/vi/${escHtml(item.videoId)}/mqdefault.jpg" alt="" loading="lazy">
       <div class="video-card-info">
         <div class="video-card-title">${escHtml(item.title)}</div>
         <div class="video-card-channel">${escHtml(item.channel)}</div>
@@ -78,4 +78,3 @@ function el(id) { return document.getElementById(id); }
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-function esc(s) { return escHtml(s); }

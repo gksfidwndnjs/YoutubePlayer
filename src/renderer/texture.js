@@ -4,7 +4,7 @@ const path = require('path');
 function applyMetalTexture(targets) {
   try {
     const fs = require('fs');
-    const metalPath = path.join(__dirname, 'assets', 'metal.png');
+    const metalPath = path.join(__dirname, '../../assets', 'metal.png');
     const data = fs.readFileSync(metalPath);
     const blob = new Blob([data], { type: 'image/png' });
     const objectUrl = URL.createObjectURL(blob);

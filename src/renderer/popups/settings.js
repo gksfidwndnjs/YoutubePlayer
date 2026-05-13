@@ -1,6 +1,6 @@
 'use strict';
 const { ipcRenderer } = require('electron');
-const { applyMetalTexture } = require('./texture');
+const { applyMetalTexture } = require('../texture');
 document.addEventListener('DOMContentLoaded', () => applyMetalTexture([document.getElementById('popup-frame')]));
 
 ipcRenderer.on('settings-state', (_, settings) => {
