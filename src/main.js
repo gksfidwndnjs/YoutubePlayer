@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, session, screen, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { create: createYoutubeDl } = require('youtube-dl-exec');
@@ -10,6 +10,7 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 let settingsPath = null;
 let playlistsPath = null;
 let mainWindow = null;
+let mainWinVisibleHeight = null;
 const popups = {
   menu:     { win: null },
   settings: { win: null },
@@ -127,6 +128,21 @@ function setWinShape(win, w, h) {
   win.setShape(roundedRectShape(Math.round(w * sf), Math.round(h * sf), Math.round(18 * sf)));
 }
 
+function applyCurrentShape(win) {
+  const { width, height } = win.getBounds();
+  const visH = mainWinVisibleHeight ?? height;
+  const sf = getWinScaleFactor(win);
+  if (visH < height) {
+    const offsetY = Math.round((height - visH) * sf);
+    win.setShape(
+      roundedRectShape(Math.round(width * sf), Math.round(visH * sf), Math.round(18 * sf))
+        .map(r => ({ ...r, y: r.y + offsetY }))
+    );
+  } else {
+    setWinShape(win, width, height);
+  }
+}
+
 function roundedRectShape(width, height, radius) {
   const rects = [];
   for (let y = 0; y < radius; y++) {
@@ -151,12 +167,18 @@ ipcMain.on('set-exact-height', (event, h) => {
   setWinShape(win, width, h);
 });
 
-ipcMain.on('resize-window', (event, delta) => {
+ipcMain.on('update-shape', (event, { visibleHeight }) => {
+  mainWinVisibleHeight = visibleHeight;
   const win = BrowserWindow.fromWebContents(event.sender);
-  const { x, y, width, height } = win.getBounds();
-  const newHeight = height + delta;
-  win.setBounds({ x, y: y - delta, width, height: newHeight });
-  setWinShape(win, width, newHeight);
+  const { width, height } = win.getBounds();
+  const sf = getWinScaleFactor(win);
+  const offsetY = Math.round((height - visibleHeight) * sf);
+  const scaledW = Math.round(width * sf);
+  const scaledH = Math.round(visibleHeight * sf);
+  const radius = Math.round(18 * sf);
+  win.setShape(
+    roundedRectShape(scaledW, scaledH, radius).map(r => ({ ...r, y: r.y + offsetY }))
+  );
 });
 
 ipcMain.on('minimize-window', (event) => BrowserWindow.fromWebContents(event.sender).minimize());
@@ -247,9 +269,8 @@ function createWindow() {
 
   let moveTimer = null;
   win.on('moved', () => {
-    const b = win.getBounds();
-    // 즉시 shape 갱신 (DPI 클리핑 방지)
-    setWinShape(win, b.width, b.height);
+    // 즉시 shape 갱신 (DPI 클리핑 방지) — 현재 visible 높이 기준으로 적용
+    applyCurrentShape(win);
     // 드래그 완료 후 새 모니터 기준으로 크기 재조정
     clearTimeout(moveTimer);
     moveTimer = setTimeout(() => {
@@ -263,7 +284,7 @@ function createWindow() {
       const newY = Math.max(dy, Math.min(fb.y, dy + dh - newH));
       if (newW !== fb.width || newX !== fb.x || newY !== fb.y) {
         win.setBounds({ x: newX, y: newY, width: newW, height: newH });
-        setWinShape(win, newW, newH);
+        applyCurrentShape(win);
       }
     }, 300);
   });
@@ -273,6 +294,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   settingsPath  = path.join(app.getPath('userData'), 'settings.json');
   playlistsPath = path.join(app.getPath('userData'), 'playlists.json');
 

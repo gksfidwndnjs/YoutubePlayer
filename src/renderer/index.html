@@ -98,6 +98,7 @@
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M7 18l10-6L7 6v12zm11 0V6"/></svg>
                 </button>
+                <button id="repeat-btn" class="ctrl-btn btn-3d" title="한 번만 재생"></button>
               </div>
             </div>
 
@@ -108,11 +109,11 @@
               <span class="time-sep"> / </span>
               <span id="time-duration">0:00</span>
             </div>
-            <input id="progress-bar" type="range" min="0" max="100" value="0" step="0.1">
+            <div class="crt-range-wrap" id="progress-wrap"><input id="progress-bar" type="range" min="0" max="100" value="0" step="0.1"></div>
             <button id="mute-btn" class="btn-icon btn-3d" title="Mute">
               <svg id="volume-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
             </button>
-            <input id="volume-bar" type="range" min="0" max="1" value="1" step="0.01" style="width:70px">
+            <div class="crt-range-wrap" id="volume-wrap" style="width:70px;flex:none"><input id="volume-bar" type="range" min="0" max="1" value="1" step="0.01"></div>
           </div>
         </div>
 

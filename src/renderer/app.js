@@ -14,6 +14,7 @@ const state = {
   settings: { audioQuality: 'best', autoAdvance: true, volume: 1 },
   playlists: [],
   activePlaylistId: null,
+  playbackMode: 'once', // 'once' | 'repeat' | 'repeat-one'
 };
 
 let pendingPlaylist = null;
@@ -181,7 +182,10 @@ function playFromQueue(index) {
 }
 
 const playNext = () => { if (state.currentIndex < state.queue.length - 1) playFromQueue(state.currentIndex + 1); };
-const playPrev = () => { if (state.currentIndex > 0) playFromQueue(state.currentIndex - 1); };
+const playPrev = () => {
+  if (state.currentIndex > 0) playFromQueue(state.currentIndex - 1);
+  else if (state.currentVideo) playFromQueue(0);
+};
 
 // ── Queue ──────────────────────────────────────────────────────────────────
 
@@ -327,14 +331,6 @@ function resetPlayer(titleText) {
   updatePlayPauseBtn();
 }
 
-function resyncWindowHeight() {
-  if (!el('playlist-panel').classList.contains('open')) return;
-  requestAnimationFrame(() => {
-    const h = Math.round(el('app').getBoundingClientRect().height);
-    ipcRenderer.send('set-exact-height', h);
-  });
-}
-
 function switchToPlaylist(id) {
   const pl = state.playlists.find(p => p.id === id);
   if (!pl) return;
@@ -342,7 +338,6 @@ function switchToPlaylist(id) {
   state.activePlaylistId = id;
   state.queue = [...pl.tracks];
   renderQueue();
-  resyncWindowHeight();
 }
 
 function switchToQueue() {
@@ -350,7 +345,6 @@ function switchToQueue() {
   state.activePlaylistId = null;
   state.queue = JSON.parse(localStorage.getItem('yt_queue') || '[]');
   renderQueue();
-  resyncWindowHeight();
 }
 
 function deletePlaylist(id) {
@@ -365,22 +359,20 @@ function deletePlaylist(id) {
 
 function togglePlaylistPanel() {
   const panel = el('playlist-panel');
-  const queueList = el('queue-list');
   const isOpen = panel.classList.contains('open');
   const chevron = el('playlist-panel-toggle').querySelector('polyline');
 
   if (isOpen) {
-    const h = Math.round(queueList.getBoundingClientRect().height);
+    const collapsedH = el('playlist-panel-header').getBoundingClientRect().height
+                     + el('player-bar').getBoundingClientRect().height;
     panel.classList.remove('open');
     chevron?.setAttribute('points', '18 15 12 9 6 15');
-    setTimeout(() => { if (h > 0) ipcRenderer.send('resize-window', -h); }, 310);
+    setTimeout(() => ipcRenderer.send('update-shape', { visibleHeight: collapsedH }), 300);
   } else {
+    ipcRenderer.send('update-shape', { visibleHeight: window.innerHeight });
+    el('queue-list').getBoundingClientRect(); // force reflow → lock initial state before transition
     panel.classList.add('open');
     chevron?.setAttribute('points', '6 9 12 15 18 9');
-    setTimeout(() => {
-      const h = Math.round(queueList.getBoundingClientRect().height);
-      if (h > 0) ipcRenderer.send('resize-window', h);
-    }, 310);
   }
 }
 
@@ -488,9 +480,25 @@ function updateKeyIndicator() {
 
 function updateVolumeIcon() {
   const muted = el('youtube-player').muted || el('youtube-player').volume === 0;
+  el('mute-btn').classList.toggle('active', muted);
   el('volume-icon').innerHTML = muted
     ? '<path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/>'
     : '<path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>';
+}
+
+const REPEAT_MODES = ['once', 'repeat', 'repeat-one'];
+const REPEAT_ICONS = {
+  once: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="15" y2="12"/><polyline points="10 7 15 12 10 17"/><line x1="19" y1="6" x2="19" y2="18"/></svg>`,
+  repeat: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>`,
+  'repeat-one': `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/><text x="12" y="14.5" text-anchor="middle" font-size="8" font-weight="700" fill="currentColor" stroke="none">1</text></svg>`,
+};
+const REPEAT_TITLES = { once: '한 번만 재생', repeat: '반복 재생', 'repeat-one': '한 곡 반복' };
+
+function updateRepeatBtn() {
+  const btn = el('repeat-btn');
+  btn.innerHTML = REPEAT_ICONS[state.playbackMode];
+  btn.title = REPEAT_TITLES[state.playbackMode];
+  btn.classList.toggle('active', state.playbackMode !== 'once');
 }
 
 // ── Metal texture ──────────────────────────────────────────────────────────
@@ -503,7 +511,17 @@ function applyMetalTexture() {
 // ── Init sub-functions ────────────────────────────────────────────────────
 
 function initAudio(audio) {
-  audio.addEventListener('ended', () => { if (state.settings.autoAdvance !== false) playNext(); });
+  audio.addEventListener('ended', () => {
+    if (state.playbackMode === 'repeat-one') {
+      playFromQueue(state.currentIndex);
+    } else if (state.settings.autoAdvance !== false) {
+      if (state.currentIndex < state.queue.length - 1) {
+        playFromQueue(state.currentIndex + 1);
+      } else if (state.playbackMode === 'repeat') {
+        playFromQueue(0);
+      }
+    }
+  });
   audio.addEventListener('loadedmetadata', () => {
     el('progress-bar').max = audio.duration;
     el('time-duration').textContent = formatTime(audio.duration);
@@ -565,8 +583,13 @@ function initControls() {
   el('close-btn').addEventListener('click', () => ipcRenderer.send('close-window'));
   el('pin-btn').addEventListener('click', async () => {
     const pinned = await ipcRenderer.invoke('toggle-always-on-top');
-    el('pin-btn').classList.toggle('pinned', pinned);
+    el('pin-btn').classList.toggle('active', pinned);
     el('pin-btn').title = pinned ? 'Unpin' : 'Always on top';
+  });
+
+  el('repeat-btn').addEventListener('click', () => {
+    state.playbackMode = REPEAT_MODES[(REPEAT_MODES.indexOf(state.playbackMode) + 1) % REPEAT_MODES.length];
+    updateRepeatBtn();
   });
 
   el('add-search-toggle').addEventListener('click', () => ipcRenderer.send('open-menu-popup'));
@@ -662,11 +685,13 @@ async function init() {
 
   updateKeyIndicator();
   renderQueue();
+  updateRepeatBtn();
 
   const audio = el('youtube-player');
   audio.volume = parseFloat(state.settings.volume ?? 1);
   el('volume-bar').value = audio.volume;
   syncTrack(el('volume-bar'));
+  updateVolumeIcon();
 
   initAudio(audio);
   initControls();
@@ -681,11 +706,12 @@ async function init() {
   }
 
   requestAnimationFrame(() => {
-    const h = Math.round(
-      el('playlist-panel-header').getBoundingClientRect().height +
-      el('player-bar').getBoundingClientRect().height
-    );
-    ipcRenderer.send('set-exact-height', h);
+    const panelH = el('playlist-panel-header').getBoundingClientRect().height;
+    const playerH = el('player-bar').getBoundingClientRect().height;
+    const collapsedH = panelH + playerH;
+    const maxH = collapsedH + 280;
+    ipcRenderer.send('set-exact-height', maxH);
+    ipcRenderer.send('update-shape', { visibleHeight: collapsedH });
   });
 }
 
