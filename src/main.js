@@ -1,9 +1,26 @@
-const { app, BrowserWindow, ipcMain, session, screen, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, session, screen, Menu, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { create: createYoutubeDl } = require('youtube-dl-exec');
 
+// ── Constants ─────────────────────────────────────────────────────────────
+
+const POPUP_HEIGHTS = { menu: 420, settings: 380, playlist: 280 };
+const POPUP_BLUR_DEBOUNCE_MS = 300;
+const WIN_MOVE_DEBOUNCE_MS = 300;
+const AUDIO_CACHE_TTL_MS = 5 * 60 * 60 * 1000;
+const AUDIO_URL_EXPIRY_MARGIN_MS = 5 * 60 * 1000;
+const WIN_WIDTH_DIVISOR = 5;
+const WIN_HEIGHT_MAX = 480;
+const WIN_RADIUS = 18;
+const DEFAULT_DOWNLOAD_DIR_NAME = 'YTmusic';
+const DEFAULT_PLAYLIST_FOLDER = 'Queue';
+const YT_WATCH_URL = (id) => `https://www.youtube.com/watch?v=${id}`;
+const YT_PLAYLIST_URL = (id) => `https://www.youtube.com/playlist?list=${id}`;
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
 let youtubeDl;
+let ffmpegPath;
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
@@ -28,7 +45,7 @@ function openPopup(ref, file, height, mw, { onLoad, onBlur, onClosed } = {}) {
   if (ref.win && !ref.win.isDestroyed()) { ref.win.close(); return; }
   const { x, y, width } = mw.getBounds();
   ref.win = new BrowserWindow({
-    width, height, x, y: y - height,
+    width, height, x: x - width, y,
     parent: mw, frame: false, resizable: false,
     transparent: true, backgroundColor: '#00000000',
     webPreferences: { nodeIntegration: true, contextIsolation: false, webSecurity: false },
@@ -49,8 +66,8 @@ let menuBlurClosedAt = 0;
 
 ipcMain.on('open-menu-popup', (event) => {
   const mw = BrowserWindow.fromWebContents(event.sender);
-  if (Date.now() - menuBlurClosedAt < 300) return;
-  openPopup(popups.menu, path.join(__dirname, 'renderer/popups/menu.html'), 420, mw, {
+  if (Date.now() - menuBlurClosedAt < POPUP_BLUR_DEBOUNCE_MS) return;
+  openPopup(popups.menu, path.join(__dirname, 'renderer/popups/menu.html'), POPUP_HEIGHTS.menu, mw, {
     onLoad: () => mw.webContents.send('send-menu-state'),
     onBlur: () => {
       if (popups.menu.win && !popups.menu.win.isDestroyed()) {
@@ -76,8 +93,8 @@ let settingsBlurClosedAt = 0;
 
 ipcMain.on('open-settings-popup', (event) => {
   const mw = BrowserWindow.fromWebContents(event.sender);
-  if (Date.now() - settingsBlurClosedAt < 300) return;
-  openPopup(popups.settings, path.join(__dirname, 'renderer/popups/settings.html'), 380, mw, {
+  if (Date.now() - settingsBlurClosedAt < POPUP_BLUR_DEBOUNCE_MS) return;
+  openPopup(popups.settings, path.join(__dirname, 'renderer/popups/settings.html'), POPUP_HEIGHTS.settings, mw, {
     onLoad: () => mw.webContents.send('send-settings-state'),
     onBlur: () => {
       if (popups.settings.win && !popups.settings.win.isDestroyed()) {
@@ -99,8 +116,8 @@ let playlistBlurClosedAt = 0;
 
 ipcMain.on('open-playlist-popup', (event) => {
   const mw = BrowserWindow.fromWebContents(event.sender);
-  if (Date.now() - playlistBlurClosedAt < 300) return;
-  openPopup(popups.playlist, path.join(__dirname, 'renderer/popups/playlist.html'), 280, mw, {
+  if (Date.now() - playlistBlurClosedAt < POPUP_BLUR_DEBOUNCE_MS) return;
+  openPopup(popups.playlist, path.join(__dirname, 'renderer/popups/playlist.html'), POPUP_HEIGHTS.playlist, mw, {
     onLoad:   () => mw.webContents.send('send-playlist-state'),
     onBlur:   () => {
       if (popups.playlist.win && !popups.playlist.win.isDestroyed()) {
@@ -125,7 +142,7 @@ function getWinScaleFactor(win) {
 
 function setWinShape(win, w, h) {
   const sf = getWinScaleFactor(win);
-  win.setShape(roundedRectShape(Math.round(w * sf), Math.round(h * sf), Math.round(18 * sf)));
+  win.setShape(roundedRectShape(Math.round(w * sf), Math.round(h * sf), Math.round(WIN_RADIUS * sf)));
 }
 
 function applyCurrentShape(win) {
@@ -135,7 +152,7 @@ function applyCurrentShape(win) {
   if (visH < height) {
     const offsetY = Math.round((height - visH) * sf);
     win.setShape(
-      roundedRectShape(Math.round(width * sf), Math.round(visH * sf), Math.round(18 * sf))
+      roundedRectShape(Math.round(width * sf), Math.round(visH * sf), Math.round(WIN_RADIUS * sf))
         .map(r => ({ ...r, y: r.y + offsetY }))
     );
   } else {
@@ -175,7 +192,7 @@ ipcMain.on('update-shape', (event, { visibleHeight }) => {
   const offsetY = Math.round((height - visibleHeight) * sf);
   const scaledW = Math.round(width * sf);
   const scaledH = Math.round(visibleHeight * sf);
-  const radius = Math.round(18 * sf);
+  const radius = Math.round(WIN_RADIUS * sf);
   win.setShape(
     roundedRectShape(scaledW, scaledH, radius).map(r => ({ ...r, y: r.y + offsetY }))
   );
@@ -196,7 +213,7 @@ ipcMain.handle('get-playlists',  () => readJSON(playlistsPath, []));
 ipcMain.handle('save-playlists', (_, data) => writeJSON(playlistsPath, data));
 
 ipcMain.handle('get-playlist-info', async (_, playlistId) => {
-  const raw = await youtubeDl(`https://www.youtube.com/playlist?list=${playlistId}`, {
+  const raw = await youtubeDl(YT_PLAYLIST_URL(playlistId), {
     flatPlaylist: true, dumpSingleJson: true, noWarnings: true,
   });
   const info = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -226,13 +243,78 @@ function getCached(videoId, quality) {
 }
 
 function setCached(videoId, quality, url) {
-  let expiresAt = Date.now() + 5 * 60 * 60 * 1000;
+  let expiresAt = Date.now() + AUDIO_CACHE_TTL_MS;
   try {
     const exp = new URL(url).searchParams.get('expire');
-    if (exp) expiresAt = parseInt(exp) * 1000 - 5 * 60 * 1000;
+    if (exp) expiresAt = parseInt(exp) * 1000 - AUDIO_URL_EXPIRY_MARGIN_MS;
   } catch {}
   audioCache.set(`${videoId}:${quality}`, { url, expiresAt });
 }
+
+function getMusicDir() {
+  const settings = readJSON(settingsPath, {});
+  const dir = settings.musicDir || path.join(app.getPath('music'), DEFAULT_DOWNLOAD_DIR_NAME);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function sanitizeFolderName(name) {
+  return String(name || DEFAULT_PLAYLIST_FOLDER).replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim() || DEFAULT_PLAYLIST_FOLDER;
+}
+
+function findLocalAudioFile(videoId) {
+  const root = getMusicDir();
+  const re = new RegExp(`\\[${videoId.replace(/[-\\^$*+?.()|[\]{}]/g, '\\$&')}\\]\\.m4a$`);
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const sub = path.join(root, entry.name);
+    for (const name of fs.readdirSync(sub)) {
+      if (re.test(name)) return path.join(sub, name);
+    }
+  }
+  return null;
+}
+
+ipcMain.handle('download-track', async (_, videoId, playlistName) => {
+  const root = getMusicDir();
+  const sub = path.join(root, sanitizeFolderName(playlistName));
+  if (!fs.existsSync(sub)) fs.mkdirSync(sub, { recursive: true });
+  await youtubeDl(YT_WATCH_URL(videoId), {
+    format: 'bestaudio[ext=m4a]/bestaudio',
+    output: path.join(sub, '%(title)s [%(id)s].%(ext)s'),
+    embedThumbnail: true,
+    ffmpegLocation: ffmpegPath,
+    noPlaylist: true,
+    noWarnings: true,
+  });
+  return { dir: sub };
+});
+
+ipcMain.handle('list-downloaded-ids', () => {
+  const root = getMusicDir();
+  const ids = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const sub = path.join(root, entry.name);
+    for (const name of fs.readdirSync(sub)) {
+      const m = name.match(/\[([\w-]{11})\]\.m4a$/);
+      if (m) ids.push(m[1]);
+    }
+  }
+  return ids;
+});
+
+ipcMain.handle('get-local-audio-path', (_, videoId) => findLocalAudioFile(videoId));
+
+ipcMain.handle('choose-music-dir', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory', 'createDirectory'],
+    defaultPath: getMusicDir(),
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  return result.filePaths[0];
+});
 
 ipcMain.handle('get-audio-url', async (_, videoId, quality) => {
   const hit = getCached(videoId, quality);
@@ -240,7 +322,7 @@ ipcMain.handle('get-audio-url', async (_, videoId, quality) => {
   const fmt = quality === 'standard'
     ? 'bestaudio[abr<=128]/bestaudio'
     : 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best';
-  const raw = await youtubeDl(`https://www.youtube.com/watch?v=${videoId}`, {
+  const raw = await youtubeDl(YT_WATCH_URL(videoId), {
     getUrl: true, format: fmt, noPlaylist: true, noWarnings: true,
   });
   const url = raw.trim().split('\n')[0];
@@ -252,8 +334,8 @@ ipcMain.handle('get-audio-url', async (_, videoId, quality) => {
 
 function createWindow() {
   const { x: wx, y: wy, width: ww, height: wh } = screen.getPrimaryDisplay().workArea;
-  const winWidth  = Math.round(ww / 5);
-  const winHeight = Math.min(480, wh);
+  const winWidth  = Math.round(ww / WIN_WIDTH_DIVISOR);
+  const winHeight = Math.min(WIN_HEIGHT_MAX, wh);
   const win = new BrowserWindow({
     width: winWidth, height: winHeight,
     x: wx + ww - winWidth, y: wy + wh - winHeight,
@@ -278,7 +360,7 @@ function createWindow() {
       const center = { x: fb.x + Math.round(fb.width / 2), y: fb.y + Math.round(fb.height / 2) };
       const display = screen.getDisplayNearestPoint(center);
       const { x: dx, y: dy, width: dw, height: dh } = display.workArea;
-      const newW = Math.round(dw / 5);
+      const newW = Math.round(dw / WIN_WIDTH_DIVISOR);
       const newH = fb.height; // 높이는 현재값 유지
       const newX = Math.max(dx, Math.min(fb.x, dx + dw - newW));
       const newY = Math.max(dy, Math.min(fb.y, dy + dh - newH));
@@ -286,7 +368,7 @@ function createWindow() {
         win.setBounds({ x: newX, y: newY, width: newW, height: newH });
         applyCurrentShape(win);
       }
-    }, 300);
+    }, WIN_MOVE_DEBOUNCE_MS);
   });
 
   win.loadFile(path.join(__dirname, 'renderer/index.html'));
@@ -303,9 +385,12 @@ app.whenReady().then(() => {
     ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'youtube-dl-exec', 'bin', binName)
     : path.join(__dirname, '../node_modules/youtube-dl-exec/bin', binName);
   youtubeDl = createYoutubeDl(ytDlpPath);
-  session.defaultSession.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-  );
+
+  const ffmpegStatic = require('ffmpeg-static');
+  ffmpegPath = app.isPackaged
+    ? ffmpegStatic.replace('app.asar', 'app.asar.unpacked')
+    : ffmpegStatic;
+  session.defaultSession.setUserAgent(USER_AGENT);
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

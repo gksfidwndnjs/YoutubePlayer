@@ -2,20 +2,91 @@
 
 const { ipcRenderer } = require('electron');
 
+// ── Constants ─────────────────────────────────────────────────────────────
+
+const STORAGE_KEYS = { queue: 'yt_queue', apiKey: 'yt_api_key' };
+const DEFAULT_SETTINGS = { audioQuality: 'best', autoAdvance: true, volume: 1 };
+const DEFAULT_PLAYLIST_FOLDER = 'Queue';
+const TOAST_DURATION_MS = 3000;
+const PLAYBACK_SAVE_INTERVAL_MS = 5000;
+const SEARCH_MAX_RESULTS = 15;
+const YT_SEARCH_API = 'https://www.googleapis.com/youtube/v3/search';
+
 // ── State ──────────────────────────────────────────────────────────────────
 
 const state = {
   apiKey: '',
-  queue: JSON.parse(localStorage.getItem('yt_queue') || '[]'),
+  queue: JSON.parse(localStorage.getItem(STORAGE_KEYS.queue) || '[]'),
   currentIndex: -1,
   currentVideo: null,
   playing: false,
   loading: false,
-  settings: { audioQuality: 'best', autoAdvance: true, volume: 1 },
+  settings: { ...DEFAULT_SETTINGS },
   playlists: [],
   activePlaylistId: null,
   playbackMode: 'once', // 'once' | 'repeat' | 'repeat-one'
+  downloadedIds: new Set(),
+  downloading: new Set(),
+  batchActive: false,
 };
+
+async function refreshDownloadedIds() {
+  try {
+    const ids = await ipcRenderer.invoke('list-downloaded-ids');
+    state.downloadedIds = new Set(ids);
+    renderQueue();
+  } catch {}
+}
+
+let downloadChain = Promise.resolve();
+
+function downloadTrack(video, { silent = false } = {}) {
+  if (state.downloadedIds.has(video.videoId) || state.downloading.has(video.videoId)) {
+    return Promise.resolve();
+  }
+  state.downloading.add(video.videoId);
+  renderQueue();
+  let resolveOuter, rejectOuter;
+  const outer = new Promise((res, rej) => { resolveOuter = res; rejectOuter = rej; });
+  downloadChain = downloadChain.then(async () => {
+    try {
+      const playlistName = getActivePlaylist()?.name || DEFAULT_PLAYLIST_FOLDER;
+      await ipcRenderer.invoke('download-track', video.videoId, playlistName);
+      await refreshDownloadedIds();
+      if (!silent) showToast(`다운로드 완료: ${truncate(video.title || video.videoId, 30)}`, 'success');
+      resolveOuter();
+    } catch (err) {
+      if (!silent) showToast(`다운로드 실패: ${truncate(video.title || video.videoId, 30)}`, 'error');
+      rejectOuter(err);
+    } finally {
+      state.downloading.delete(video.videoId);
+      renderQueue();
+    }
+  });
+  return outer;
+}
+
+async function downloadAll() {
+  if (state.batchActive) return;
+  const pending = state.queue.filter(v => !state.downloadedIds.has(v.videoId));
+  if (!pending.length) return;
+  state.batchActive = true;
+  renderQueue();
+  showToast(`일괄 다운로드 시작 (${pending.length}곡)`, 'success');
+  let ok = 0, fail = 0;
+  for (const video of pending) {
+    try {
+      await downloadTrack(video, { silent: true });
+      ok++;
+    } catch {
+      fail++;
+      showToast(`다운로드 실패 (스킵): ${truncate(video.title || video.videoId, 30)}`, 'error');
+    }
+  }
+  state.batchActive = false;
+  renderQueue();
+  showToast(`일괄 다운로드 완료 (성공 ${ok} / 실패 ${fail})`, fail ? 'error' : 'success');
+}
 
 let pendingPlaylist = null;
 
@@ -46,7 +117,7 @@ function showToast(msg, type = '') {
   t.className = 'toast' + (type ? ' ' + type : '');
   t.textContent = msg;
   el('toast-container').appendChild(t);
-  setTimeout(() => t.remove(), 3000);
+  setTimeout(() => t.remove(), TOAST_DURATION_MS);
 }
 
 // ── ID / URL extraction ───────────────────────────────────────────────────
@@ -146,8 +217,12 @@ async function playVideo(video) {
   syncTrack(el('progress-bar'));
 
   try {
-    const url = await ipcRenderer.invoke('get-audio-url', video.videoId, state.settings.audioQuality);
-    audio.src = url;
+    const localPath = await ipcRenderer.invoke('get-local-audio-path', video.videoId);
+    if (localPath) {
+      audio.src = 'file:///' + localPath.replace(/\\/g, '/');
+    } else {
+      audio.src = await ipcRenderer.invoke('get-audio-url', video.videoId, state.settings.audioQuality);
+    }
     await audio.play();
     state.playing = true;
     setLoading(false);
@@ -197,9 +272,14 @@ function saveQueue() {
       ipcRenderer.invoke('save-playlists', state.playlists);
     }
   } else {
-    localStorage.setItem('yt_queue', JSON.stringify(state.queue));
+    localStorage.setItem(STORAGE_KEYS.queue, JSON.stringify(state.queue));
   }
 }
+
+const SPINNER_SVG = `<svg class="dl-spinner" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2a10 10 0 0 1 10 10"/></svg>`;
+const CHECK_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12 10 17 19 7"/></svg>`;
+const DOWNLOAD_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>`;
+const CLOSE_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
 
 function renderQueue() {
   const pl = getActivePlaylist();
@@ -214,10 +294,37 @@ function renderQueue() {
     return;
   }
 
+  const pendingCount = state.queue.filter(v => !state.downloadedIds.has(v.videoId)).length;
+  const batchDisabled = state.batchActive || pendingCount === 0;
+  const batchIcon = state.batchActive ? SPINNER_SVG : DOWNLOAD_SVG;
+  const batchLabel = state.batchActive
+    ? '다운로드 중…'
+    : (pendingCount === 0 ? '모두 다운로드됨' : `일괄 다운로드 (${pendingCount}곡)`);
+
   list.innerHTML = '';
+  const batchRow = document.createElement('div');
+  batchRow.className = 'queue-batch-row';
+  batchRow.innerHTML = `
+    <button class="batch-dl-btn btn-3d${state.batchActive ? ' loading' : ''}"${batchDisabled ? ' disabled' : ''}>
+      ${batchIcon}<span>${batchLabel}</span>
+    </button>`;
+  if (!batchDisabled) {
+    batchRow.querySelector('.batch-dl-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      downloadAll();
+    });
+  }
+  list.appendChild(batchRow);
+
   state.queue.forEach((video, i) => {
     const card = document.createElement('div');
     card.className = 'video-card' + (i === state.currentIndex ? ' now-playing' : '');
+    const isDownloaded = state.downloadedIds.has(video.videoId);
+    const isDownloading = state.downloading.has(video.videoId);
+    const dlIcon = isDownloading ? SPINNER_SVG : (isDownloaded ? CHECK_SVG : DOWNLOAD_SVG);
+    const dlClass = isDownloading ? ' loading' : (isDownloaded ? ' downloaded' : '');
+    const dlTitle = isDownloading ? 'Downloading…' : (isDownloaded ? 'Already downloaded' : 'Download audio + thumbnail');
+    const dlDisabled = isDownloaded || isDownloading;
     card.innerHTML = `
       <img class="video-thumb" src="${escHtml(thumbUrl(video.videoId))}" alt="" loading="lazy">
       <div class="video-card-info">
@@ -225,17 +332,22 @@ function renderQueue() {
         <div class="video-card-channel">${escHtml(video.channel || '')}</div>
       </div>
       <div class="video-card-btns">
-        <button class="btn-icon btn-3d remove-btn" title="Remove">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
+        <button class="btn-icon btn-3d download-btn${dlClass}" title="${dlTitle}"${dlDisabled ? ' disabled' : ''}>
+          ${dlIcon}
         </button>
+        <button class="btn-icon btn-3d remove-btn" title="Remove">${CLOSE_SVG}</button>
       </div>`;
     card.addEventListener('click', () => playFromQueue(i));
     card.querySelector('.remove-btn').addEventListener('click', (e) => {
       e.stopPropagation();
       removeFromQueue(i);
     });
+    if (!dlDisabled) {
+      card.querySelector('.download-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        downloadTrack(video).catch(() => {});
+      });
+    }
     list.appendChild(card);
   });
 }
@@ -343,7 +455,7 @@ function switchToPlaylist(id) {
 function switchToQueue() {
   resetPlayer('Add a video to start listening');
   state.activePlaylistId = null;
-  state.queue = JSON.parse(localStorage.getItem('yt_queue') || '[]');
+  state.queue = JSON.parse(localStorage.getItem(STORAGE_KEYS.queue) || '[]');
   renderQueue();
 }
 
@@ -455,9 +567,12 @@ async function restorePlayback(saved) {
   setLoading(true);
 
   try {
-    const url = await ipcRenderer.invoke('get-audio-url', video.videoId, state.settings.audioQuality);
+    const localPath = await ipcRenderer.invoke('get-local-audio-path', video.videoId);
+    const src = localPath
+      ? 'file:///' + localPath.replace(/\\/g, '/')
+      : await ipcRenderer.invoke('get-audio-url', video.videoId, state.settings.audioQuality);
     const audio = el('youtube-player');
-    audio.src = url;
+    audio.src = src;
     const t = saved.currentTime || 0;
     if (t > 0) {
       audio.addEventListener('loadedmetadata', () => { audio.currentTime = t; }, { once: true });
@@ -536,7 +651,7 @@ function initAudio(audio) {
     el('time-current').textContent = formatTime(audio.currentTime);
     syncTrack(el('progress-bar'));
     const now = Date.now();
-    if (state.playing && now - lastSaveTime > 5000) {
+    if (state.playing && now - lastSaveTime > PLAYBACK_SAVE_INTERVAL_MS) {
       lastSaveTime = now;
       saveLastPlayback();
     }
@@ -618,6 +733,7 @@ function initIPCHandlers() {
     state.apiKey = data.apiKey || '';
     await ipcRenderer.invoke('save-settings', state.settings);
     updateKeyIndicator();
+    refreshDownloadedIds();
     showToast('Settings saved', 'success');
   });
 
@@ -627,7 +743,7 @@ function initIPCHandlers() {
   ipcRenderer.on('popup-search-request', async (_, query) => {
     if (!state.apiKey) { ipcRenderer.send('popup-search-response', { results: [], error: true }); return; }
     try {
-      const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=15&key=${encodeURIComponent(state.apiKey)}`);
+      const res = await fetch(`${YT_SEARCH_API}?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=${SEARCH_MAX_RESULTS}&key=${encodeURIComponent(state.apiKey)}`);
       const data = await res.json();
       if (data.error || !data.items?.length) { ipcRenderer.send('popup-search-response', { results: [] }); return; }
       ipcRenderer.send('popup-search-response', {
@@ -672,19 +788,20 @@ async function init() {
     ipcRenderer.invoke('get-playlists'),
   ]);
 
-  const legacyKey = localStorage.getItem('yt_api_key');
+  const legacyKey = localStorage.getItem(STORAGE_KEYS.apiKey);
   if (legacyKey && !saved.apiKey) {
     saved.apiKey = legacyKey;
-    localStorage.removeItem('yt_api_key');
+    localStorage.removeItem(STORAGE_KEYS.apiKey);
     ipcRenderer.invoke('save-settings', saved);
   }
 
-  state.settings = Object.assign({ audioQuality: 'best', autoAdvance: true, volume: 1 }, saved);
+  state.settings = { ...DEFAULT_SETTINGS, ...saved };
   state.apiKey = state.settings.apiKey || '';
   state.playlists = Array.isArray(savedPlaylists) ? savedPlaylists : [];
 
   updateKeyIndicator();
   renderQueue();
+  refreshDownloadedIds();
   updateRepeatBtn();
 
   const audio = el('youtube-player');

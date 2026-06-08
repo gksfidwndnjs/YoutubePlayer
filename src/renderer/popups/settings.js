@@ -10,6 +10,12 @@ ipcRenderer.on('settings-state', (_, settings) => {
   const qEl = document.querySelector(`input[name="audio-quality"][value="${settings.audioQuality || 'best'}"]`);
   if (qEl) qEl.checked = true;
   el('settings-autoadvance').checked = settings.autoAdvance !== false;
+  el('settings-music-dir').value = settings.musicDir || '';
+});
+
+el('settings-browse-dir').addEventListener('click', async () => {
+  const dir = await ipcRenderer.invoke('choose-music-dir');
+  if (dir) el('settings-music-dir').value = dir;
 });
 
 el('settings-key-toggle').addEventListener('click', () => {
@@ -23,7 +29,8 @@ el('save-btn').addEventListener('click', () => {
   const apiKey = el('settings-api-key').value.trim();
   const audioQuality = (document.querySelector('input[name="audio-quality"]:checked') || {}).value || 'best';
   const autoAdvance = el('settings-autoadvance').checked;
-  ipcRenderer.send('settings-saved', { apiKey, audioQuality, autoAdvance });
+  const musicDir = el('settings-music-dir').value.trim();
+  ipcRenderer.send('settings-saved', { apiKey, audioQuality, autoAdvance, musicDir });
 });
 
 el('cancel-btn').addEventListener('click', () => window.close());
