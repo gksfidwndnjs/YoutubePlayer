@@ -11,6 +11,43 @@ ipcRenderer.on('settings-state', (_, settings) => {
   if (qEl) qEl.checked = true;
   el('settings-autoadvance').checked = settings.autoAdvance !== false;
   el('settings-music-dir').value = settings.musicDir || '';
+  refreshGoogleStatus();
+});
+
+// ── Google account ──────────────────────────────────────────────────────────
+async function refreshGoogleStatus() {
+  const { signedIn, account, configured } = await ipcRenderer.invoke('google-status');
+  const btn = el('settings-google-btn');
+  if (!configured) {
+    el('settings-gstatus').textContent = '이 빌드에 Google 로그인이 설정되지 않음';
+    btn.textContent = 'Google로 로그인';
+    btn.disabled = true;
+    return;
+  }
+  btn.disabled = false;
+  el('settings-gstatus').textContent = signedIn ? `로그인됨: ${account || 'YouTube'}` : '로그인 안 됨';
+  btn.textContent = signedIn ? '로그아웃' : 'Google로 로그인';
+}
+
+el('settings-google-btn').addEventListener('click', async () => {
+  const btn = el('settings-google-btn');
+  const { signedIn } = await ipcRenderer.invoke('google-status');
+  if (signedIn) {
+    await ipcRenderer.invoke('google-sign-out');
+    await refreshGoogleStatus();
+    return;
+  }
+  btn.disabled = true;
+  el('settings-gstatus').textContent = '브라우저에서 로그인 중…';
+  try {
+    const { account, count } = await ipcRenderer.invoke('google-sign-in');
+    el('settings-gstatus').textContent = `로그인됨: ${account} · 재생목록 ${count}개`;
+    btn.textContent = '로그아웃';
+  } catch (e) {
+    el('settings-gstatus').textContent = '로그인 실패: ' + (e.message || e);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 el('settings-browse-dir').addEventListener('click', async () => {

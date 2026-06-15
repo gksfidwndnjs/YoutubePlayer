@@ -17,11 +17,17 @@ function render({ playlists, activePlaylistId }) {
   });
   list.appendChild(queueItem);
 
-  if (playlists.length) {
-    const div = document.createElement('div');
-    div.className = 'pl-divider';
-    list.appendChild(div);
-  }
+  // Split into local (added by URL) and Google-account playlists.
+  appendSection(list, '로컬 재생목록', playlists.filter(p => p.source !== 'google'), activePlaylistId);
+  appendSection(list, 'Google 계정', playlists.filter(p => p.source === 'google'), activePlaylistId);
+}
+
+function appendSection(list, label, playlists, activePlaylistId) {
+  if (!playlists.length) return;
+  const hdr = document.createElement('div');
+  hdr.className = 'pl-category';
+  hdr.textContent = label;
+  list.appendChild(hdr);
 
   playlists.forEach(pl => {
     const item = makeItem(pl.name, pl.id, activePlaylistId === pl.id, pl.tracks.length);
@@ -36,7 +42,6 @@ function render({ playlists, activePlaylistId }) {
     });
     list.appendChild(item);
   });
-
 }
 
 function makeItem(name, id, active, count) {

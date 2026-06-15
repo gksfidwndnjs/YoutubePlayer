@@ -463,12 +463,26 @@ function resetPlayer(titleText) {
   updatePlayPauseBtn();
 }
 
-function switchToPlaylist(id) {
+async function switchToPlaylist(id) {
   const pl = state.playlists.find(p => p.id === id);
   if (!pl) return;
   resetPlayer('Select a track to play');
   state.activePlaylistId = id;
-  state.queue = [...pl.tracks];
+  // Google playlists load their tracks lazily on first open (Data API).
+  if (pl.source === 'google' && !pl.loaded) {
+    state.queue = [];
+    renderQueue();
+    showToast('재생목록 불러오는 중…');
+    try {
+      pl.tracks = await ipcRenderer.invoke('google-playlist-items', pl.id);
+      pl.loaded = true;
+      ipcRenderer.invoke('save-playlists', state.playlists);
+    } catch {
+      showToast('재생목록을 불러오지 못했습니다. 설정에서 다시 로그인하세요.', 'error');
+    }
+    if (state.activePlaylistId !== id) return; // user switched away while loading
+  }
+  state.queue = [...(pl.tracks || [])];
   renderQueue();
 }
 
@@ -646,7 +660,7 @@ async function restorePlayback(saved) {
     const pl = state.playlists.find(p => p.id === saved.activePlaylistId);
     if (!pl) return;
     state.activePlaylistId = saved.activePlaylistId;
-    state.queue = [...pl.tracks];
+    state.queue = [...(pl.tracks || [])];
   }
   const video = state.queue[saved.currentIndex];
   if (!video) return;
@@ -827,6 +841,25 @@ function initIPCHandlers() {
 
   ipcRenderer.on('send-playlist-state', () =>
     ipcRenderer.send('push-playlist-state', { playlists: state.playlists, activePlaylistId: state.activePlaylistId }));
+
+  // Google sign-in imported the user's playlists; merge them in (tracks load lazily).
+  ipcRenderer.on('google-imported', async (_, { account, playlists }) => {
+    const others = state.playlists.filter(p => p.source !== 'google');
+    const imported = playlists.map(p => ({ ...p, tracks: [], loaded: false }));
+    state.playlists = [...others, ...imported];
+    await ipcRenderer.invoke('save-playlists', state.playlists);
+    ipcRenderer.send('push-playlist-state', { playlists: state.playlists, activePlaylistId: state.activePlaylistId });
+    showToast(`${account} · 재생목록 ${imported.length}개를 불러왔습니다`, 'success');
+  });
+
+  ipcRenderer.on('google-signed-out', async () => {
+    const onGoogle = state.playlists.some(p => p.source === 'google' && p.id === state.activePlaylistId);
+    state.playlists = state.playlists.filter(p => p.source !== 'google');
+    await ipcRenderer.invoke('save-playlists', state.playlists);
+    if (onGoogle) switchToQueue();
+    ipcRenderer.send('push-playlist-state', { playlists: state.playlists, activePlaylistId: state.activePlaylistId });
+    showToast('Google 로그아웃됨', 'success');
+  });
 
   ipcRenderer.on('popup-search-request', async (_, query) => {
     if (!state.apiKey) { ipcRenderer.send('popup-search-response', { results: [], error: true }); return; }

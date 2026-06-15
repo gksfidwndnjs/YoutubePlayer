@@ -2,11 +2,12 @@ const { app, BrowserWindow, ipcMain, session, screen, Menu, dialog } = require('
 const path = require('path');
 const fs = require('fs');
 const { create: createYoutubeDl } = require('youtube-dl-exec');
+const oauth = require('./oauth');
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
 // All popup/window dimensions below are in DESIGN px — multiplied by uiScale at use.
-const POPUP_HEIGHTS = { menu: 420, settings: 380, playlist: 280 };
+const POPUP_HEIGHTS = { menu: 420, settings: 470, playlist: 280 };
 const POPUP_BLUR_DEBOUNCE_MS = 300;
 const AUDIO_CACHE_TTL_MS = 5 * 60 * 60 * 1000;
 const AUDIO_URL_EXPIRY_MARGIN_MS = 5 * 60 * 1000;
@@ -251,6 +252,78 @@ ipcMain.handle('get-playlist-info', async (_, playlistId) => {
   };
 });
 
+// ── Google account: sign in and import the user's own playlists ─────────────
+// Owned playlists are often private, so tracks come from the YouTube Data API
+// (with the OAuth token) rather than yt-dlp.
+const YT_DATA_API = 'https://www.googleapis.com/youtube/v3';
+
+async function ytData(pathAndQuery) {
+  const token = await oauth.getAccessToken();
+  const res = await fetch(`${YT_DATA_API}/${pathAndQuery}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`YouTube API ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+async function listMyPlaylists() {
+  const ch = await ytData('channels?part=snippet,contentDetails&mine=true');
+  const channel = ch.items?.[0];
+  const account = channel?.snippet?.title || 'YouTube';
+  const likesId = channel?.contentDetails?.relatedPlaylists?.likes;
+  const playlists = [];
+  if (likesId) playlists.push({ id: likesId, name: '👍 Liked videos', source: 'google' });
+  let pageToken = '';
+  do {
+    const q = `playlists?part=snippet&mine=true&maxResults=50${pageToken ? `&pageToken=${pageToken}` : ''}`;
+    const data = await ytData(q);
+    for (const it of data.items || []) {
+      playlists.push({ id: it.id, name: it.snippet.title || 'Untitled', source: 'google' });
+    }
+    pageToken = data.nextPageToken || '';
+  } while (pageToken);
+  return { account, playlists };
+}
+
+async function getMyPlaylistItems(playlistId) {
+  const tracks = [];
+  let pageToken = '';
+  do {
+    const q = `playlistItems?part=snippet,contentDetails&playlistId=${playlistId}&maxResults=50${pageToken ? `&pageToken=${pageToken}` : ''}`;
+    const data = await ytData(q);
+    for (const it of data.items || []) {
+      const vid = it.contentDetails?.videoId;
+      const sn = it.snippet || {};
+      // skip removed/private entries (no playable owner)
+      if (!vid || sn.title === 'Private video' || sn.title === 'Deleted video') continue;
+      tracks.push({ videoId: vid, title: sn.title || vid, channel: sn.videoOwnerChannelTitle || '' });
+    }
+    pageToken = data.nextPageToken || '';
+  } while (pageToken);
+  return tracks;
+}
+
+ipcMain.handle('google-status', () => ({
+  signedIn: oauth.isSignedIn(), account: oauth.getAccount(), configured: oauth.isConfigured(),
+}));
+
+ipcMain.handle('google-sign-in', async () => {
+  await oauth.signIn();
+  const { account, playlists } = await listMyPlaylists();
+  oauth.setAccount(account);
+  // Hand the imported list to the main window for merging into state.
+  mainWindow?.webContents.send('google-imported', { account, playlists });
+  return { account, count: playlists.length };
+});
+
+ipcMain.handle('google-sign-out', () => {
+  oauth.signOut();
+  mainWindow?.webContents.send('google-signed-out');
+  return true;
+});
+
+ipcMain.handle('google-playlist-items', (_, playlistId) => getMyPlaylistItems(playlistId));
+
 // ── Audio cache ───────────────────────────────────────────────────────────
 
 const audioCache = new Map();
@@ -395,6 +468,7 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   settingsPath  = path.join(app.getPath('userData'), 'settings.json');
   playlistsPath = path.join(app.getPath('userData'), 'playlists.json');
+  oauth.init(path.join(app.getPath('userData'), 'google-token.json'));
 
   const binName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
   const ytDlpPath = app.isPackaged

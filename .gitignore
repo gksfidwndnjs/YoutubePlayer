@@ -5,5 +5,8 @@ dist/
 build/
 docs/
 
+# Local Google OAuth credentials (bundled into builds, never in the repo)
+src/google-config.js
+
 # Cached YouTube player scripts
 1778*.js
