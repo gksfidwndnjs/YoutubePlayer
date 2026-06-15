@@ -1,6 +1,6 @@
 {
   "name": "youtube-player",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "YouTube player desktop app",
   "main": "src/main.js",
   "scripts": {

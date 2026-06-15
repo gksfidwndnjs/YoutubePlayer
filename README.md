@@ -39,6 +39,8 @@ YouTube Player는 작업 중에 한쪽 구석에 띄워두고 쓰는 작은 데�
 ### 재생목록 · 검색
 - 접이식 재생목록(큐) 패널
 - YouTube 재생목록 URL로 플레이리스트 추가, 여러 플레이리스트 간 전환
+- **Google 로그인** — 로그인하면 내 YouTube 재생목록(좋아요 포함)을 전부 자동으로 불러옵니다.
+  비공개 재생목록도 가져오며, 재생목록 리스트는 **로컬 / Google 계정** 카테고리로 분리됩니다.
 - 곡 검색 (YouTube Data API v3 키 필요)
 
 ### 다운로드
@@ -85,6 +87,27 @@ npm run build
 
 > 빌드는 Windows에서 실행하세요. (Linux/WSL에서는 Windows 코드 서명에 wine이 필요합니다.)
 
+### Google 로그인 설정 (포크/직접 빌드 시)
+
+Google 로그인 기능을 쓰려면 본인 소유의 OAuth 클라이언트가 필요합니다 (공개 리포에는 자격증명이 들어있지 않습니다).
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → 프로젝트 생성
+2. **YouTube Data API v3** 사용 설정
+3. **OAuth 동의 화면** 구성 — 범위에 `.../auth/youtube.readonly` 추가, 테스트 사용자에 본인 추가
+4. **사용자 인증 정보 → OAuth 클라이언트 ID → 데스크톱 앱** 생성
+5. `src/google-config.example.js`를 `src/google-config.js`로 복사하고 Client ID/Secret 입력
+
+```js
+// src/google-config.js  (gitignored — 리포에 커밋되지 않음, 빌드 시 .exe에만 포함)
+module.exports = {
+  clientId: '…apps.googleusercontent.com',
+  clientSecret: 'GOCSPX-…',
+};
+```
+
+> 데스크톱 앱 OAuth는 PKCE로 보호되며, Google은 설치형 앱의 client secret을 비밀로 취급하지 않습니다.
+> 임의의 사용자까지 로그인을 허용하려면 동의 화면을 **프로덕션으로 게시 + Google 앱 검증**이 필요합니다.
+
 앱 아이콘을 다시 생성하려면 (Pillow 필요):
 
 ```bash
@@ -103,12 +126,15 @@ python3 scripts/make_icon.py   # assets/icon.png + assets/icon.ico 재생성
 
 ```
 src/
-  main.js              메인 프로세스 (창/스케일/배치, IPC, 다운로드, yt-dlp)
+  main.js              메인 프로세스 (창/스케일/배치, IPC, 다운로드, yt-dlp, Data API)
+  oauth.js             Google OAuth 2.0 (loopback + PKCE)
+  google-config.js     OAuth 자격증명 (gitignored, 빌드 시 주입)
   renderer/
     index.html         위젯 UI
-    app.js             재생/큐/검색/다운로드/창 배치 로직
+    app.js             재생/큐/검색/다운로드/창 배치/재생목록 import 로직
     style.css          메탈 + CRT 레트로 테마
     texture.js         metal.png 브러시드 텍스처 적용
+    popups/            메뉴 · 설정 · 재생목록 팝업
 assets/
   metal.png            브러시드 스테인리스 텍스처
   icon.png / icon.ico  앱 아이콘
