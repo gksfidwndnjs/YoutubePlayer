@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YouTube Player</title>
+<style>
+  :root { --crt:#00e857; --metal1:#2a2d31; --metal2:#16181b; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; color: #d8dde2;
+    font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    background: radial-gradient(circle at 50% -10%, #2c3034, #0e0f11 70%);
+    display: flex; flex-direction: column; align-items: center;
+    padding: 56px 20px;
+  }
+  .badge {
+    width: 96px; height: 96px; border-radius: 22px;
+    background: linear-gradient(145deg, var(--metal1), var(--metal2));
+    border: 1px solid #3a3e43;
+    box-shadow: inset 0 1px 0 #4a4f55, 0 10px 30px rgba(0,0,0,.5);
+    display: grid; place-items: center; margin-bottom: 24px;
+  }
+  .badge .screen {
+    width: 60px; height: 60px; border-radius: 12px;
+    background: radial-gradient(circle at 50% 40%, #06351d, #021008);
+    box-shadow: inset 0 0 14px rgba(0,232,87,.4);
+    display: grid; place-items: center;
+  }
+  .badge .play {
+    width: 0; height: 0; margin-left: 4px;
+    border-left: 20px solid var(--crt);
+    border-top: 13px solid transparent;
+    border-bottom: 13px solid transparent;
+    filter: drop-shadow(0 0 6px var(--crt));
+  }
+  h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: .5px; }
+  .tag { color: var(--crt); font-size: 14px; margin-bottom: 32px; opacity: .9; }
+  .card {
+    width: 100%; max-width: 620px;
+    background: linear-gradient(180deg, #1b1d20, #131517);
+    border: 1px solid #2c3034; border-radius: 16px;
+    padding: 28px 30px; box-shadow: 0 14px 40px rgba(0,0,0,.45);
+  }
+  p { line-height: 1.7; color: #b6bcc3; }
+  ul { line-height: 1.9; color: #b6bcc3; padding-left: 20px; }
+  a { color: var(--crt); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .links { margin-top: 28px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .links a {
+    padding: 10px 16px; border: 1px solid #34383d; border-radius: 10px;
+    background: #1c1e21; color: #d8dde2; font-size: 14px;
+  }
+  .links a:hover { border-color: var(--crt); color: var(--crt); text-decoration: none; }
+  footer { margin-top: 40px; font-size: 12px; color: #6b7178; }
+</style>
+</head>
+<body>
+  <div class="badge"><div class="screen"><div class="play"></div></div></div>
+  <h1>YouTube Player</h1>
+  <div class="tag">컴팩트 YouTube 음악 플레이어 위젯 · Windows</div>
+
+  <div class="card">
+    <p>YouTube Player는 작업 중 화면 한쪽 구석에 띄워두고 쓰는 작은 데스크톱 음악 플레이어입니다.
+    브라우저 탭을 따로 열지 않고도 YouTube 음원을 검색·재생·다운로드할 수 있습니다.</p>
+    <p>Google 로그인 시 본인의 YouTube 재생목록(좋아요 포함)을 앱 안으로 불러올 수 있으며,
+    이때 사용하는 권한은 <strong>읽기 전용</strong>입니다.</p>
+    <div class="links">
+      <a href="https://github.com/gksfidwndnjs/YoutubePlayer">GitHub 저장소</a>
+      <a href="https://github.com/gksfidwndnjs/YoutubePlayer/releases/latest">다운로드</a>
+      <a href="privacy.html">개인정보처리방침</a>
+      <a href="terms.html">서비스 약관</a>
+    </div>
+  </div>
+
+  <footer>© 2026 YouTube Player · 개인 비공식 프로젝트</footer>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>개인정보처리방침 · YouTube Player</title>
+<style>
+  body {
+    margin: 0; color: #d8dde2;
+    font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    background: radial-gradient(circle at 50% -10%, #2c3034, #0e0f11 70%);
+    display: flex; justify-content: center; padding: 56px 20px;
+  }
+  .card {
+    width: 100%; max-width: 720px;
+    background: linear-gradient(180deg, #1b1d20, #131517);
+    border: 1px solid #2c3034; border-radius: 16px;
+    padding: 40px 44px; box-shadow: 0 14px 40px rgba(0,0,0,.45);
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 30px 0 10px; color: #00e857; }
+  .updated { color: #6b7178; font-size: 13px; margin-bottom: 8px; }
+  p, li { line-height: 1.75; color: #b6bcc3; }
+  ul { padding-left: 22px; }
+  a { color: #00e857; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .back { display: inline-block; margin-top: 32px; font-size: 14px; }
+  strong { color: #d8dde2; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>개인정보처리방침</h1>
+    <div class="updated">최종 업데이트: 2026년 6월 16일</div>
+    <p>YouTube Player(이하 "본 앱")는 사용자의 개인정보를 존중합니다. 본 방침은 본 앱이 어떤 데이터에
+    접근하고 어떻게 처리하는지 설명합니다. 본 앱은 <strong>사용자 본인의 기기에서만 동작하는 데스크톱
+    애플리케이션</strong>이며, 개발자가 운영하는 서버가 없습니다.</p>
+
+    <h2>1. 접근하는 데이터</h2>
+    <p>사용자가 Google 계정으로 로그인하면, 본 앱은 <strong>YouTube Data API v3</strong>의
+    <strong>읽기 전용</strong> 권한(<code>youtube.readonly</code>)을 사용하여 다음 정보에 접근합니다.</p>
+    <ul>
+      <li>사용자의 YouTube 재생목록 및 그 안의 동영상 항목</li>
+      <li>사용자의 "좋아요 표시한 동영상" 목록</li>
+      <li>재생목록 표시에 필요한 기본 채널 정보(채널명 등)</li>
+    </ul>
+
+    <h2>2. 데이터 이용 목적</h2>
+    <p>접근한 데이터는 오직 <strong>사용자 본인의 화면에 재생목록을 표시하고 재생</strong>하기 위한
+    용도로만 사용됩니다. 그 외의 목적(분석, 광고, 프로파일링 등)으로는 일절 사용하지 않습니다.</p>
+
+    <h2>3. 데이터 저장 및 전송</h2>
+    <ul>
+      <li>로그인 인증 토큰(OAuth 토큰)은 <strong>사용자 기기 내부</strong>(애플리케이션 사용자 데이터
+      폴더)에만 저장됩니다.</li>
+      <li>재생목록 데이터는 메모리에서만 처리되며 영구 저장되지 않습니다.</li>
+      <li>본 앱은 사용자의 어떤 데이터도 개발자 또는 제3자의 서버로 <strong>전송하지 않습니다.</strong>
+      모든 API 호출은 사용자의 기기에서 Google 서버로 직접 이루어집니다.</li>
+    </ul>
+
+    <h2>4. 데이터 공유</h2>
+    <p>본 앱은 사용자 데이터를 누구와도 공유, 판매, 양도하지 않습니다.</p>
+
+    <h2>5. Google API 사용에 대한 고지</h2>
+    <p>본 앱의 Google 사용자 데이터 이용은
+    <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API 서비스 사용자 데이터 정책</a>
+    (제한적 사용 요건 포함)을 준수합니다.</p>
+
+    <h2>6. 권한 철회</h2>
+    <p>사용자는 언제든지 앱 내 로그아웃 또는
+    <a href="https://myaccount.google.com/permissions">Google 계정 권한 페이지</a>에서
+    본 앱의 접근 권한을 철회할 수 있습니다. 로그아웃 시 기기에 저장된 토큰은 삭제됩니다.</p>
+
+    <h2>7. 문의</h2>
+    <p>개인정보 관련 문의: <a href="mailto:duksanai@gmail.com">duksanai@gmail.com</a></p>
+
+    <a class="back" href="index.html">← 홈으로</a>
+  </div>
+</body>
+</html>
