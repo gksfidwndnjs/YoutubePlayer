@@ -53,29 +53,6 @@
 .hidden { display: none !important; }
 html, body { height: 100%; background: transparent; }
 
-body::before {
-  content: '';
-  position: fixed;
-  inset: 1px;
-  border-radius: 17px;
-  padding: 4px;
-  background: linear-gradient(
-    145deg,
-    rgba(255,255,255,0.45) 0%,
-    rgba(215,215,225,0.28) 22%,
-    rgba(150,150,162,0.12) 48%,
-    rgba(50,50,60,0.25) 72%,
-    rgba(0,0,0,0.40) 100%
-  );
-  -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
-  z-index: 9999;
-}
-
 body {
   font-family: 'RetroPixel', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
   background: transparent;
@@ -498,15 +475,54 @@ button.link-btn:hover { background: transparent; opacity: 0.8; }
   to   { transform: rotate(360deg); }
 }
 
+/* Circular CRT bezel around the spinning disc */
+#disc-frame {
+  position: relative;
+  width: 70px;
+  height: 70px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  padding: 3px;
+  background: var(--crt-bg-gradient);
+  border: 1px solid rgba(0,0,0,0.55);
+  border-top-color: rgba(0,255,80,0.12);
+  box-shadow:
+    inset 2px 2px 5px rgba(0,0,0,0.7),
+    inset -1px -1px 2px rgba(0,255,80,0.04),
+    0 1px 0 rgba(255,255,255,0.10),
+    0 0 8px rgba(0,232,87,0.08);
+  animation: crt-flicker var(--crt-flicker-duration) infinite, crt-glow var(--crt-glow-duration) infinite;
+}
+
+/* Scanlines — static (do not spin with the disc) */
+#disc-frame::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--crt-scanline);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* Vignette — circular curved-glass darkening at the rim */
+#disc-frame::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: radial-gradient(circle at center, transparent 55%, rgba(0,0,0,0.45) 100%);
+  pointer-events: none;
+  z-index: 5;
+}
+
 #player-disc {
-  width: 68px;
-  height: 68px;
+  width: 100%;
+  height: 100%;
   border-radius: 50%;
   overflow: hidden;
-  flex-shrink: 0;
-  border: 2px solid var(--border);
   position: relative;
-  background: var(--surface2);
+  background: var(--crt-bg-gradient);
   animation: lp-spin 5s linear infinite;
   animation-play-state: paused;
 }
@@ -688,7 +704,6 @@ button.link-btn:hover { background: transparent; opacity: 0.8; }
   display: flex;
   gap: 4px;
   align-items: center;
-  -webkit-app-region: no-drag;
 }
 
 #add-search-toggle { margin-left: auto; }
@@ -719,15 +734,44 @@ button.link-btn:hover { background: transparent; opacity: 0.8; }
   border-left-color: rgba(0,0,0,0.18);
 }
 
-/* Draggable regions */
-#player-info { -webkit-app-region: drag; }
-#playlist-panel-header { -webkit-app-region: drag; }
-button, input { -webkit-app-region: no-drag; }
+/* The window is repositioned with the placement popover (see app.js), not dragged —
+   native -webkit-app-region drag teleports across monitors on transparent frameless
+   windows on Windows (electron/electron#31058). */
+#player-info, #playlist-panel-header { cursor: default; }
 
-/* Position lock */
-body.drag-locked #player-info,
-body.drag-locked #playlist-panel-header { -webkit-app-region: no-drag; }
-#lock-drag-btn.locked { color: var(--crt-green); }
+/* ── Window placement popover — brushed-metal panel matching the player ── */
+#position-popover {
+  position: absolute;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  background-color: var(--bg);
+  background-image: var(--metal-shine);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background-clip: padding-box;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.22),
+    inset 1px 0 0 rgba(255,255,255,0.10),
+    inset 0 -2px 3px rgba(0,0,0,0.30),
+    0 8px 20px rgba(0,0,0,0.55);
+}
+#position-popover.hidden { display: none; }
+#position-popover .actions-sep { height: 30px; margin: 0; }
+.pos-corner-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+}
+
+/* ── Top-docked layout: player on top, playlist expands downward ── */
+body.dock-top #player-area {
+  bottom: auto;
+  top: 0;
+  flex-direction: column-reverse;
+}
 
 /* ── Volume section (in bottom row) ── */
 

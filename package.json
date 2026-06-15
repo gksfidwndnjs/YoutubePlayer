@@ -25,6 +25,7 @@
       "node_modules/ffmpeg-static/**/*"
     ],
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
         {
           "target": "portable",

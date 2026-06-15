@@ -3,6 +3,7 @@ node_modules/
 *.log
 dist/
 build/
+docs/
 
 # Cached YouTube player scripts
 1778*.js

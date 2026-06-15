@@ -34,7 +34,7 @@ async function refreshDownloadedIds() {
   try {
     const ids = await ipcRenderer.invoke('list-downloaded-ids');
     state.downloadedIds = new Set(ids);
-    renderQueue();
+    refreshDownloadStates();
   } catch {}
 }
 
@@ -45,7 +45,7 @@ function downloadTrack(video, { silent = false } = {}) {
     return Promise.resolve();
   }
   state.downloading.add(video.videoId);
-  renderQueue();
+  refreshDownloadStates();
   let resolveOuter, rejectOuter;
   const outer = new Promise((res, rej) => { resolveOuter = res; rejectOuter = rej; });
   downloadChain = downloadChain.then(async () => {
@@ -60,7 +60,7 @@ function downloadTrack(video, { silent = false } = {}) {
       rejectOuter(err);
     } finally {
       state.downloading.delete(video.videoId);
-      renderQueue();
+      refreshDownloadStates();
     }
   });
   return outer;
@@ -71,7 +71,7 @@ async function downloadAll() {
   const pending = state.queue.filter(v => !state.downloadedIds.has(v.videoId));
   if (!pending.length) return;
   state.batchActive = true;
-  renderQueue();
+  refreshDownloadStates();
   showToast(`일괄 다운로드 시작 (${pending.length}곡)`, 'success');
   let ok = 0, fail = 0;
   for (const video of pending) {
@@ -84,7 +84,7 @@ async function downloadAll() {
     }
   }
   state.batchActive = false;
-  renderQueue();
+  refreshDownloadStates();
   showToast(`일괄 다운로드 완료 (성공 ${ok} / 실패 ${fail})`, fail ? 'error' : 'success');
 }
 
@@ -146,6 +146,13 @@ function extractVideoId(raw) {
 
 const thumbUrl   = (id) => `https://img.youtube.com/vi/${id}/mqdefault.jpg`;
 const hqThumbUrl = (id) => `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+
+// Prefer a downloaded local file; fall back to a streaming URL.
+async function resolveAudioSrc(videoId) {
+  const localPath = await ipcRenderer.invoke('get-local-audio-path', videoId);
+  if (localPath) return 'file:///' + localPath.replace(/\\/g, '/');
+  return ipcRenderer.invoke('get-audio-url', videoId, state.settings.audioQuality);
+}
 
 async function fetchVideoMeta(videoId) {
   try {
@@ -217,12 +224,7 @@ async function playVideo(video) {
   syncTrack(el('progress-bar'));
 
   try {
-    const localPath = await ipcRenderer.invoke('get-local-audio-path', video.videoId);
-    if (localPath) {
-      audio.src = 'file:///' + localPath.replace(/\\/g, '/');
-    } else {
-      audio.src = await ipcRenderer.invoke('get-audio-url', video.videoId, state.settings.audioQuality);
-    }
+    audio.src = await resolveAudioSrc(video.videoId);
     await audio.play();
     state.playing = true;
     setLoading(false);
@@ -281,6 +283,51 @@ const CHECK_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" s
 const DOWNLOAD_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>`;
 const CLOSE_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
 
+// Returns { icon, cls, title, disabled } for a track's download button.
+function downloadBtnState(videoId) {
+  if (state.downloading.has(videoId)) {
+    return { icon: SPINNER_SVG, cls: ' loading', title: 'Downloading…', disabled: true };
+  }
+  if (state.downloadedIds.has(videoId)) {
+    return { icon: CHECK_SVG, cls: ' downloaded', title: 'Already downloaded', disabled: true };
+  }
+  return { icon: DOWNLOAD_SVG, cls: '', title: 'Download audio + thumbnail', disabled: false };
+}
+
+function applyDownloadBtn(btn, video) {
+  const { icon, cls, title, disabled } = downloadBtnState(video.videoId);
+  btn.className = 'btn-icon btn-3d download-btn' + cls;
+  btn.title = title;
+  btn.disabled = disabled;
+  btn.innerHTML = icon;
+  btn.onclick = disabled ? null : (e) => { e.stopPropagation(); downloadTrack(video).catch(() => {}); };
+}
+
+function renderBatchRow() {
+  const pendingCount = state.queue.filter(v => !state.downloadedIds.has(v.videoId)).length;
+  const batchDisabled = state.batchActive || pendingCount === 0;
+  const btn = el('queue-list')?.querySelector('.batch-dl-btn');
+  if (!btn) return;
+  btn.className = 'batch-dl-btn btn-3d' + (state.batchActive ? ' loading' : '');
+  btn.disabled = batchDisabled;
+  btn.innerHTML = `${state.batchActive ? SPINNER_SVG : DOWNLOAD_SVG}<span>${
+    state.batchActive ? '다운로드 중…' : (pendingCount === 0 ? '모두 다운로드됨' : `일괄 다운로드 (${pendingCount}곡)`)
+  }</span>`;
+  btn.onclick = batchDisabled ? null : (e) => { e.stopPropagation(); downloadAll(); };
+}
+
+// Lightweight refresh of download-related UI without rebuilding the whole list.
+function refreshDownloadStates() {
+  renderBatchRow();
+  const list = el('queue-list');
+  if (!list) return;
+  list.querySelectorAll('.video-card[data-vid]').forEach(card => {
+    const videoId = card.dataset.vid;
+    const btn = card.querySelector('.download-btn');
+    if (btn) applyDownloadBtn(btn, state.queue.find(v => v.videoId === videoId) || { videoId });
+  });
+}
+
 function renderQueue() {
   const pl = getActivePlaylist();
   const total = state.queue.length;
@@ -294,37 +341,17 @@ function renderQueue() {
     return;
   }
 
-  const pendingCount = state.queue.filter(v => !state.downloadedIds.has(v.videoId)).length;
-  const batchDisabled = state.batchActive || pendingCount === 0;
-  const batchIcon = state.batchActive ? SPINNER_SVG : DOWNLOAD_SVG;
-  const batchLabel = state.batchActive
-    ? '다운로드 중…'
-    : (pendingCount === 0 ? '모두 다운로드됨' : `일괄 다운로드 (${pendingCount}곡)`);
-
   list.innerHTML = '';
   const batchRow = document.createElement('div');
   batchRow.className = 'queue-batch-row';
-  batchRow.innerHTML = `
-    <button class="batch-dl-btn btn-3d${state.batchActive ? ' loading' : ''}"${batchDisabled ? ' disabled' : ''}>
-      ${batchIcon}<span>${batchLabel}</span>
-    </button>`;
-  if (!batchDisabled) {
-    batchRow.querySelector('.batch-dl-btn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      downloadAll();
-    });
-  }
+  batchRow.innerHTML = `<button class="batch-dl-btn btn-3d"></button>`;
   list.appendChild(batchRow);
+  renderBatchRow();
 
   state.queue.forEach((video, i) => {
     const card = document.createElement('div');
     card.className = 'video-card' + (i === state.currentIndex ? ' now-playing' : '');
-    const isDownloaded = state.downloadedIds.has(video.videoId);
-    const isDownloading = state.downloading.has(video.videoId);
-    const dlIcon = isDownloading ? SPINNER_SVG : (isDownloaded ? CHECK_SVG : DOWNLOAD_SVG);
-    const dlClass = isDownloading ? ' loading' : (isDownloaded ? ' downloaded' : '');
-    const dlTitle = isDownloading ? 'Downloading…' : (isDownloaded ? 'Already downloaded' : 'Download audio + thumbnail');
-    const dlDisabled = isDownloaded || isDownloading;
+    card.dataset.vid = video.videoId;
     card.innerHTML = `
       <img class="video-thumb" src="${escHtml(thumbUrl(video.videoId))}" alt="" loading="lazy">
       <div class="video-card-info">
@@ -332,9 +359,7 @@ function renderQueue() {
         <div class="video-card-channel">${escHtml(video.channel || '')}</div>
       </div>
       <div class="video-card-btns">
-        <button class="btn-icon btn-3d download-btn${dlClass}" title="${dlTitle}"${dlDisabled ? ' disabled' : ''}>
-          ${dlIcon}
-        </button>
+        <button class="btn-icon btn-3d download-btn"></button>
         <button class="btn-icon btn-3d remove-btn" title="Remove">${CLOSE_SVG}</button>
       </div>`;
     card.addEventListener('click', () => playFromQueue(i));
@@ -342,12 +367,7 @@ function renderQueue() {
       e.stopPropagation();
       removeFromQueue(i);
     });
-    if (!dlDisabled) {
-      card.querySelector('.download-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        downloadTrack(video).catch(() => {});
-      });
-    }
+    applyDownloadBtn(card.querySelector('.download-btn'), video);
     list.appendChild(card);
   });
 }
@@ -469,24 +489,96 @@ function deletePlaylist(id) {
 
 // ── Playlist panel ────────────────────────────────────────────────────────
 
+// Collapsed content height in design px (zoom-independent — see main.js sizing).
+const collapsedHeight = () =>
+  el('playlist-panel-header').getBoundingClientRect().height
+  + el('player-bar').getBoundingClientRect().height;
+
+// The OS window stays a fixed tall size; the playlist slides open/closed purely via
+// CSS (#queue-list max-height transition) within it — no window resize, no setShape.
 function togglePlaylistPanel() {
   const panel = el('playlist-panel');
   const isOpen = panel.classList.contains('open');
   const chevron = el('playlist-panel-toggle').querySelector('polyline');
-
-  if (isOpen) {
-    const collapsedH = el('playlist-panel-header').getBoundingClientRect().height
-                     + el('player-bar').getBoundingClientRect().height;
-    panel.classList.remove('open');
-    chevron?.setAttribute('points', '18 15 12 9 6 15');
-    setTimeout(() => ipcRenderer.send('update-shape', { visibleHeight: collapsedH }), 300);
-  } else {
-    ipcRenderer.send('update-shape', { visibleHeight: window.innerHeight });
-    el('queue-list').getBoundingClientRect(); // force reflow → lock initial state before transition
-    panel.classList.add('open');
-    chevron?.setAttribute('points', '6 9 12 15 18 9');
-  }
+  panel.classList.toggle('open', !isOpen);
+  chevron?.setAttribute('points', isOpen ? '18 15 12 9 6 15' : '6 9 12 15 18 9');
+  updateClickThrough(); // visible UI area changed
 }
+
+// ── Click-through for the transparent empty area ────────────────────────────
+// The window is taller than its visible UI (the player sits at the bottom; the area
+// above it is transparent when collapsed). setShape used to clip input there, but it
+// breaks on secondary monitors — so instead we toggle whole-window click-through
+// based on whether the cursor is over the actual UI (setIgnoreMouseEvents+forward).
+
+let mouseIgnored = false;
+function setIgnoreMouse(ignore) {
+  if (ignore === mouseIgnored) return;
+  mouseIgnored = ignore;
+  ipcRenderer.send('set-ignore-mouse', ignore);
+}
+
+// An open modal/dropdown overlays the whole window, so input must stay live.
+const overlayOpen = () =>
+  !el('add-playlist-modal').classList.contains('hidden') ||
+  !el('playlist-dropdown-menu').classList.contains('hidden') ||
+  !el('position-popover').classList.contains('hidden');
+
+function pointOverUI(x, y) {
+  if (overlayOpen()) return true;
+  const r = el('player-area').getBoundingClientRect();
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+
+let lastMouse = { x: -1, y: -1 };
+function updateClickThrough(x = lastMouse.x, y = lastMouse.y) {
+  if (x < 0) return;
+  setIgnoreMouse(!pointOverUI(x, y));
+}
+
+document.addEventListener('mousemove', (e) => {
+  lastMouse = { x: e.clientX, y: e.clientY };
+  updateClickThrough(e.clientX, e.clientY);
+});
+
+// ── Window placement ─────────────────────────────────────────────────────────
+// The window can't be dragged (native drag teleports across monitors on Windows),
+// so it's repositioned with buttons: a corner snaps the widget to that corner of the
+// current monitor; the monitor button cycles displays. Top corners flip the layout
+// (body.dock-top) so the player sits at the top and the playlist expands downward.
+const positionPopover = el('position-popover');
+const isPopoverOpen = () => !positionPopover.classList.contains('hidden');
+
+function closePositionPopover() {
+  if (!isPopoverOpen()) return;
+  positionPopover.classList.add('hidden');
+  updateClickThrough();
+}
+function togglePositionPopover() {
+  if (isPopoverOpen()) { closePositionPopover(); return; }
+  positionPopover.classList.remove('hidden');
+  const btn = el('position-btn').getBoundingClientRect();
+  const pop = positionPopover.getBoundingClientRect();
+  let top = btn.top - pop.height - 6;          // prefer above the button…
+  if (top < 6) top = btn.bottom + 6;           // …else drop below it
+  positionPopover.style.top = `${Math.round(top)}px`;
+  positionPopover.style.left = `${Math.round(Math.max(6, btn.right - pop.width))}px`;
+  updateClickThrough();
+}
+
+positionPopover.querySelectorAll('.pos-corner').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const corner = btn.dataset.corner;
+    document.body.classList.toggle('dock-top', corner === 'tl' || corner === 'tr');
+    ipcRenderer.send('win-set-corner', corner);
+    closePositionPopover();
+  });
+});
+el('pos-monitor-btn').addEventListener('click', () => ipcRenderer.send('win-next-monitor'));
+el('position-btn').addEventListener('click', (e) => { e.stopPropagation(); togglePositionPopover(); });
+document.addEventListener('mousedown', (e) => {
+  if (isPopoverOpen() && !e.target.closest('#position-popover, #position-btn')) closePositionPopover();
+});
 
 // ── Add Playlist modal ────────────────────────────────────────────────────
 
@@ -567,12 +659,8 @@ async function restorePlayback(saved) {
   setLoading(true);
 
   try {
-    const localPath = await ipcRenderer.invoke('get-local-audio-path', video.videoId);
-    const src = localPath
-      ? 'file:///' + localPath.replace(/\\/g, '/')
-      : await ipcRenderer.invoke('get-audio-url', video.videoId, state.settings.audioQuality);
     const audio = el('youtube-player');
-    audio.src = src;
+    audio.src = await resolveAudioSrc(video.videoId);
     const t = saved.currentTime || 0;
     if (t > 0) {
       audio.addEventListener('loadedmetadata', () => { audio.currentTime = t; }, { once: true });
@@ -823,12 +911,9 @@ async function init() {
   }
 
   requestAnimationFrame(() => {
-    const panelH = el('playlist-panel-header').getBoundingClientRect().height;
-    const playerH = el('player-bar').getBoundingClientRect().height;
-    const collapsedH = panelH + playerH;
-    const maxH = collapsedH + 280;
+    // Window is fixed at the full (expanded) height; the playlist slides within it.
+    const maxH = collapsedHeight() + 280; // 280 = CSS #queue-list open max-height
     ipcRenderer.send('set-exact-height', maxH);
-    ipcRenderer.send('update-shape', { visibleHeight: collapsedH });
   });
 }
 

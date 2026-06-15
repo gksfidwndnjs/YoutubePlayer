@@ -48,20 +48,28 @@
         <div id="player-bar">
           <div id="player-bar-main">
 
-            <div id="player-disc">
-              <div id="album-placeholder">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="12" r="10" stroke="#555" stroke-width="1.5"/>
-                  <circle cx="12" cy="12" r="3" fill="#555"/>
-                </svg>
+            <div id="disc-frame">
+              <div id="player-disc">
+                <div id="album-placeholder">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="#555" stroke-width="1.5"/>
+                    <circle cx="12" cy="12" r="3" fill="#555"/>
+                  </svg>
+                </div>
+                <img id="album-art" src="" alt="">
               </div>
-              <img id="album-art" src="" alt="">
             </div>
 
             <div id="player-right">
               <div id="player-actions">
                 <button id="pin-btn" class="btn-icon btn-3d" title="Always on top">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6h2v-6h5v-2l-2-2z"/></svg>
+                </button>
+                <button id="position-btn" class="btn-icon btn-3d" title="위치 / 모니터">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+                    <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+                  </svg>
                 </button>
                 <button id="add-search-toggle" class="btn-icon btn-3d" title="Add / Search">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="6"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -120,6 +128,30 @@
       </div>
     </main>
 
+  </div>
+
+  <!-- Window placement popover (corner snap + monitor switch) -->
+  <div id="position-popover" class="hidden">
+    <button id="pos-monitor-btn" class="btn-icon btn-3d" title="다른 모니터로">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="4" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+      </svg>
+    </button>
+    <div class="actions-sep"></div>
+    <div class="pos-corner-grid">
+      <button class="pos-corner btn-icon btn-3d" data-corner="tl" title="좌상단">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="1.5"/><rect x="3.4" y="3.4" width="4.4" height="4.4" rx="0.8" fill="#00e857" stroke="none"/></svg>
+      </button>
+      <button class="pos-corner btn-icon btn-3d" data-corner="tr" title="우상단">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="1.5"/><rect x="8.2" y="3.4" width="4.4" height="4.4" rx="0.8" fill="#00e857" stroke="none"/></svg>
+      </button>
+      <button class="pos-corner btn-icon btn-3d" data-corner="bl" title="좌하단">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="1.5"/><rect x="3.4" y="8.2" width="4.4" height="4.4" rx="0.8" fill="#00e857" stroke="none"/></svg>
+      </button>
+      <button class="pos-corner btn-icon btn-3d" data-corner="br" title="우하단">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="1.5"/><rect x="8.2" y="8.2" width="4.4" height="4.4" rx="0.8" fill="#00e857" stroke="none"/></svg>
+      </button>
+    </div>
   </div>
 
 </div>

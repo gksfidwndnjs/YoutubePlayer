@@ -5,14 +5,19 @@ const { create: createYoutubeDl } = require('youtube-dl-exec');
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
+// All popup/window dimensions below are in DESIGN px — multiplied by uiScale at use.
 const POPUP_HEIGHTS = { menu: 420, settings: 380, playlist: 280 };
 const POPUP_BLUR_DEBOUNCE_MS = 300;
-const WIN_MOVE_DEBOUNCE_MS = 300;
 const AUDIO_CACHE_TTL_MS = 5 * 60 * 60 * 1000;
 const AUDIO_URL_EXPIRY_MARGIN_MS = 5 * 60 * 1000;
-const WIN_WIDTH_DIVISOR = 5;
 const WIN_HEIGHT_MAX = 480;
-const WIN_RADIUS = 18;
+// Consistent-sizing model: the UI is designed at DESIGN_WIDTH and scaled uniformly
+// by uiScale = clamp(workArea.height / REFERENCE_HEIGHT, SCALE_MIN, SCALE_MAX).
+// Height-based so different aspect ratios at the same height get the same size.
+const DESIGN_WIDTH = 384;       // = legacy 1920/5, so 1080p looks pixel-identical to before
+const REFERENCE_HEIGHT = 1080;  // workArea height that maps to uiScale = 1.0
+const SCALE_MIN = 0.75;
+const SCALE_MAX = 1.6;
 const DEFAULT_DOWNLOAD_DIR_NAME = 'YTmusic';
 const DEFAULT_PLAYLIST_FOLDER = 'Queue';
 const YT_WATCH_URL = (id) => `https://www.youtube.com/watch?v=${id}`;
@@ -23,11 +28,17 @@ let youtubeDl;
 let ffmpegPath;
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+// Transparent windows misbehave on Windows multi-monitor (disappear / teleport on
+// cross-monitor drag). These mitigations help transparent-window compositing/occlusion.
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 
 let settingsPath = null;
 let playlistsPath = null;
 let mainWindow = null;
-let mainWinVisibleHeight = null;
+let mainUiScale = 1;          // logical scale (design px → DIP), re-derived per monitor
+let mainWinDesignMaxH = WIN_HEIGHT_MAX; // full (tall) window height in design px
+let placedCorner = 'br';      // last corner the window was placed at (tl/tr/bl/br)
 const popups = {
   menu:     { win: null },
   settings: { win: null },
@@ -43,15 +54,19 @@ const writeJSON = (p, data)     => fs.writeFileSync(p, JSON.stringify(data, null
 
 function openPopup(ref, file, height, mw, { onLoad, onBlur, onClosed } = {}) {
   if (ref.win && !ref.win.isDestroyed()) { ref.win.close(); return; }
-  const { x, y, width } = mw.getBounds();
+  const { x, y, width } = mw.getBounds(); // width is already uiScale-scaled DIP
   ref.win = new BrowserWindow({
-    width, height, x: x - width, y,
+    width, height: Math.round(height * mainUiScale), x: x - width, y,
     parent: mw, frame: false, resizable: false,
     transparent: true, backgroundColor: '#00000000',
     webPreferences: { nodeIntegration: true, contextIsolation: false, webSecurity: false },
   });
   ref.win.loadFile(file);
-  if (onLoad) ref.win.webContents.once('did-finish-load', onLoad);
+  ref.win.webContents.once('did-finish-load', () => {
+    ref.win.webContents.setVisualZoomLevelLimits(1, 1);
+    ref.win.webContents.setZoomFactor(mainUiScale);
+    onLoad?.();
+  });
   if (onBlur) ref.win.on('blur', onBlur);
   ref.win.on('closed', () => { ref.win = null; onClosed?.(); });
 }
@@ -62,23 +77,49 @@ function sendToPopup(ref, channel, data) {
 
 // ── Popup IPC ─────────────────────────────────────────────────────────────
 
-let menuBlurClosedAt = 0;
-
-ipcMain.on('open-menu-popup', (event) => {
-  const mw = BrowserWindow.fromWebContents(event.sender);
-  if (Date.now() - menuBlurClosedAt < POPUP_BLUR_DEBOUNCE_MS) return;
-  openPopup(popups.menu, path.join(__dirname, 'renderer/popups/menu.html'), POPUP_HEIGHTS.menu, mw, {
-    onLoad: () => mw.webContents.send('send-menu-state'),
-    onBlur: () => {
-      if (popups.menu.win && !popups.menu.win.isDestroyed()) {
-        menuBlurClosedAt = Date.now();
-        popups.menu.win.close();
-      }
-    },
+// Wires up an `open-*-popup` handler with blur-to-close debounce. `requestState`
+// is the channel the main window listens on to push fresh state once loaded.
+function registerPopup(ref, { openChannel, file, height, requestState }) {
+  let blurClosedAt = 0;
+  ipcMain.on(openChannel, (event) => {
+    const mw = BrowserWindow.fromWebContents(event.sender);
+    if (Date.now() - blurClosedAt < POPUP_BLUR_DEBOUNCE_MS) return;
+    openPopup(ref, path.join(__dirname, file), height, mw, {
+      onLoad: () => mw.webContents.send(requestState),
+      onBlur: () => {
+        if (ref.win && !ref.win.isDestroyed()) {
+          blurClosedAt = Date.now();
+          ref.win.close();
+        }
+      },
+    });
   });
+}
+
+registerPopup(popups.menu, {
+  openChannel: 'open-menu-popup',
+  file: 'renderer/popups/menu.html',
+  height: POPUP_HEIGHTS.menu,
+  requestState: 'send-menu-state',
+});
+
+registerPopup(popups.settings, {
+  openChannel: 'open-settings-popup',
+  file: 'renderer/popups/settings.html',
+  height: POPUP_HEIGHTS.settings,
+  requestState: 'send-settings-state',
+});
+
+registerPopup(popups.playlist, {
+  openChannel: 'open-playlist-popup',
+  file: 'renderer/popups/playlist.html',
+  height: POPUP_HEIGHTS.playlist,
+  requestState: 'send-playlist-state',
 });
 
 ipcMain.on('push-menu-state', (_, state) => sendToPopup(popups.menu, 'init-state', state));
+ipcMain.on('push-settings-state', (_, settings) => sendToPopup(popups.settings, 'settings-state', settings));
+ipcMain.on('push-playlist-state', (_, state) => sendToPopup(popups.playlist, 'playlist-state', state));
 
 ipcMain.on('popup-search-request', (_, query) => {
   mainWindow?.webContents.send('popup-search-request', query);
@@ -89,113 +130,93 @@ ipcMain.on('popup-search-response', (_, data) => {
   popups.menu.win.webContents.send(data.error ? 'search-error' : 'search-results', data.results);
 });
 
-let settingsBlurClosedAt = 0;
-
-ipcMain.on('open-settings-popup', (event) => {
-  const mw = BrowserWindow.fromWebContents(event.sender);
-  if (Date.now() - settingsBlurClosedAt < POPUP_BLUR_DEBOUNCE_MS) return;
-  openPopup(popups.settings, path.join(__dirname, 'renderer/popups/settings.html'), POPUP_HEIGHTS.settings, mw, {
-    onLoad: () => mw.webContents.send('send-settings-state'),
-    onBlur: () => {
-      if (popups.settings.win && !popups.settings.win.isDestroyed()) {
-        settingsBlurClosedAt = Date.now();
-        popups.settings.win.close();
-      }
-    },
-  });
-});
-
-ipcMain.on('push-settings-state', (_, settings) => sendToPopup(popups.settings, 'settings-state', settings));
-
 ipcMain.on('settings-saved', (_, data) => {
   mainWindow?.webContents.send('settings-saved', data);
   if (popups.settings.win && !popups.settings.win.isDestroyed()) popups.settings.win.close();
 });
 
-let playlistBlurClosedAt = 0;
-
-ipcMain.on('open-playlist-popup', (event) => {
-  const mw = BrowserWindow.fromWebContents(event.sender);
-  if (Date.now() - playlistBlurClosedAt < POPUP_BLUR_DEBOUNCE_MS) return;
-  openPopup(popups.playlist, path.join(__dirname, 'renderer/popups/playlist.html'), POPUP_HEIGHTS.playlist, mw, {
-    onLoad:   () => mw.webContents.send('send-playlist-state'),
-    onBlur:   () => {
-      if (popups.playlist.win && !popups.playlist.win.isDestroyed()) {
-        playlistBlurClosedAt = Date.now();
-        popups.playlist.win.close();
-      }
-    },
-  });
-});
-
-ipcMain.on('push-playlist-state', (_, state) => sendToPopup(popups.playlist, 'playlist-state', state));
-
 ipcMain.on('popup-action', (_, action) => mainWindow?.webContents.send('popup-action', action));
 
-// ── Window shape ──────────────────────────────────────────────────────────
+// ── UI scale ────────────────────────────────────────────────────────────────
 
-function getWinScaleFactor(win) {
-  const { x, y, width, height } = win.getBounds();
-  const center = { x: x + Math.round(width / 2), y: y + Math.round(height / 2) };
-  return screen.getDisplayNearestPoint(center).scaleFactor || 1;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+// Logical scale derived from the display's height (stable across aspect ratios).
+function computeUiScale(display) {
+  return clamp(display.workArea.height / REFERENCE_HEIGHT, SCALE_MIN, SCALE_MAX);
 }
 
-function setWinShape(win, w, h) {
-  const sf = getWinScaleFactor(win);
-  win.setShape(roundedRectShape(Math.round(w * sf), Math.round(h * sf), Math.round(WIN_RADIUS * sf)));
+// Page zoom only affects rendering, not getBoundingClientRect — so the renderer
+// keeps reporting design px while everything scales uniformly on screen.
+function applyUiScale(win, scale) {
+  mainUiScale = scale;
+  win.webContents.setVisualZoomLevelLimits(1, 1);
+  win.webContents.setZoomFactor(scale);
 }
 
-function applyCurrentShape(win) {
-  const { width, height } = win.getBounds();
-  const visH = mainWinVisibleHeight ?? height;
-  const sf = getWinScaleFactor(win);
-  if (visH < height) {
-    const offsetY = Math.round((height - visH) * sf);
-    win.setShape(
-      roundedRectShape(Math.round(width * sf), Math.round(visH * sf), Math.round(WIN_RADIUS * sf))
-        .map(r => ({ ...r, y: r.y + offsetY }))
-    );
-  } else {
-    setWinShape(win, width, height);
-  }
-}
-
-function roundedRectShape(width, height, radius) {
-  const rects = [];
-  for (let y = 0; y < radius; y++) {
-    const dx = Math.round(radius - Math.sqrt(radius * radius - (radius - y) * (radius - y)));
-    rects.push({ x: dx, y, width: width - 2 * dx, height: 1 });
-  }
-  rects.push({ x: 0, y: radius, width, height: height - 2 * radius });
-  for (let y = height - radius; y < height; y++) {
-    const dy = y - (height - radius);
-    const dx = Math.round(radius - Math.sqrt(radius * radius - dy * dy));
-    rects.push({ x: dx, y, width: width - 2 * dx, height: 1 });
-  }
-  return rects;
-}
+// ── Window sizing ───────────────────────────────────────────────────────────
+// No setShape: it breaks transparent-window compositing on secondary monitors (and
+// repeatedly re-applying a shape during a native drag caused the cross-monitor
+// teleport). The window stays a fixed (tall) size; rounded corners come from CSS
+// (#player-area border-radius + overflow). The empty transparent area above the
+// player (when collapsed) is made click-through via setIgnoreMouseEvents, toggled by
+// the renderer based on cursor position. This keeps the OS window size constant so
+// the playlist still slides open/closed in place (smooth) on every monitor.
 
 // ── Window IPC ────────────────────────────────────────────────────────────
 
+// Sets the full (tall) window height once on load. h is design px, bottom-anchored.
 ipcMain.on('set-exact-height', (event, h) => {
+  mainWinDesignMaxH = h;
   const win = BrowserWindow.fromWebContents(event.sender);
+  const hDip = Math.round(h * mainUiScale);
   const { x, y, width, height } = win.getBounds();
-  win.setBounds({ x, y: y + (height - h), width, height: h });
-  setWinShape(win, width, h);
+  win.setBounds({ x, y: y + (height - hDip), width, height: hDip });
 });
 
-ipcMain.on('update-shape', (event, { visibleHeight }) => {
-  mainWinVisibleHeight = visibleHeight;
+// Renderer's hit-test toggles click-through for the transparent empty area.
+ipcMain.on('set-ignore-mouse', (event, ignore) => {
+  BrowserWindow.fromWebContents(event.sender)?.setIgnoreMouseEvents(ignore, { forward: true });
+});
+
+// Window placement by buttons (replaces dragging, which teleported across monitors
+// on Windows). A corner places the window flush to that corner of its current display;
+// a monitor switch moves it to the next display keeping the same corner. Each placement
+// re-derives uiScale for the target display so the widget stays consistently sized.
+function displayOfWindow(win) {
+  const b = win.getBounds();
+  return screen.getDisplayNearestPoint({ x: b.x + Math.round(b.width / 2), y: b.y + Math.round(b.height / 2) });
+}
+
+function placeWindow(win, display, corner) {
+  placedCorner = corner;
+  const scale = computeUiScale(display);
+  applyUiScale(win, scale);
+  const { x: ax, y: ay, width: aw, height: ah } = display.workArea;
+  const width  = Math.round(DESIGN_WIDTH * scale);
+  const height = Math.min(Math.round(mainWinDesignMaxH * scale), ah);
+  const onRight  = corner === 'tr' || corner === 'br';
+  const onBottom = corner === 'bl' || corner === 'br';
+  win.setBounds({
+    x: onRight  ? ax + aw - width  : ax,
+    y: onBottom ? ay + ah - height : ay,
+    width, height,
+  });
+}
+
+ipcMain.on('win-set-corner', (event, corner) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  const { width, height } = win.getBounds();
-  const sf = getWinScaleFactor(win);
-  const offsetY = Math.round((height - visibleHeight) * sf);
-  const scaledW = Math.round(width * sf);
-  const scaledH = Math.round(visibleHeight * sf);
-  const radius = Math.round(WIN_RADIUS * sf);
-  win.setShape(
-    roundedRectShape(scaledW, scaledH, radius).map(r => ({ ...r, y: r.y + offsetY }))
-  );
+  if (win) placeWindow(win, displayOfWindow(win), corner);
+});
+
+ipcMain.on('win-next-monitor', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+  const displays = screen.getAllDisplays();
+  if (displays.length < 2) return;
+  const cur = displayOfWindow(win);
+  const idx = displays.findIndex((d) => d.id === cur.id);
+  placeWindow(win, displays[(idx + 1) % displays.length], placedCorner);
 });
 
 ipcMain.on('minimize-window', (event) => BrowserWindow.fromWebContents(event.sender).minimize());
@@ -262,17 +283,37 @@ function sanitizeFolderName(name) {
   return String(name || DEFAULT_PLAYLIST_FOLDER).replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').trim() || DEFAULT_PLAYLIST_FOLDER;
 }
 
-function findLocalAudioFile(videoId) {
+// videoId → absolute file path. Built lazily by scanning the music dir once,
+// then kept warm; invalidated on download or when the music dir changes.
+let localAudioIndex = null;
+let localAudioIndexDir = null;
+
+function buildLocalAudioIndex() {
   const root = getMusicDir();
-  const re = new RegExp(`\\[${videoId.replace(/[-\\^$*+?.()|[\]{}]/g, '\\$&')}\\]\\.m4a$`);
+  const index = new Map();
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const sub = path.join(root, entry.name);
     for (const name of fs.readdirSync(sub)) {
-      if (re.test(name)) return path.join(sub, name);
+      const m = name.match(/\[([\w-]{11})\]\.m4a$/);
+      if (m) index.set(m[1], path.join(sub, name));
     }
   }
-  return null;
+  localAudioIndex = index;
+  localAudioIndexDir = root;
+  return index;
+}
+
+function getLocalAudioIndex() {
+  // Rebuild if never built or the music dir changed under us.
+  if (!localAudioIndex || localAudioIndexDir !== getMusicDir()) return buildLocalAudioIndex();
+  return localAudioIndex;
+}
+
+const invalidateLocalAudioIndex = () => { localAudioIndex = null; };
+
+function findLocalAudioFile(videoId) {
+  return getLocalAudioIndex().get(videoId) || null;
 }
 
 ipcMain.handle('download-track', async (_, videoId, playlistName) => {
@@ -287,22 +328,11 @@ ipcMain.handle('download-track', async (_, videoId, playlistName) => {
     noPlaylist: true,
     noWarnings: true,
   });
+  invalidateLocalAudioIndex();
   return { dir: sub };
 });
 
-ipcMain.handle('list-downloaded-ids', () => {
-  const root = getMusicDir();
-  const ids = [];
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const sub = path.join(root, entry.name);
-    for (const name of fs.readdirSync(sub)) {
-      const m = name.match(/\[([\w-]{11})\]\.m4a$/);
-      if (m) ids.push(m[1]);
-    }
-  }
-  return ids;
-});
+ipcMain.handle('list-downloaded-ids', () => [...getLocalAudioIndex().keys()]);
 
 ipcMain.handle('get-local-audio-path', (_, videoId) => findLocalAudioFile(videoId));
 
@@ -333,12 +363,17 @@ ipcMain.handle('get-audio-url', async (_, videoId, quality) => {
 // ── Window ────────────────────────────────────────────────────────────────
 
 function createWindow() {
-  const { x: wx, y: wy, width: ww, height: wh } = screen.getPrimaryDisplay().workArea;
-  const winWidth  = Math.round(ww / WIN_WIDTH_DIVISOR);
-  const winHeight = Math.min(WIN_HEIGHT_MAX, wh);
+  const display = screen.getPrimaryDisplay();
+  const { x: wx, y: wy, width: ww, height: wh } = display.workArea;
+  // Set the scale up-front so set-exact-height (which arrives shortly after load)
+  // already sees the right value, even before did-finish-load re-applies the zoom.
+  mainUiScale = computeUiScale(display);
+  const winWidth  = Math.round(DESIGN_WIDTH * mainUiScale);
+  const winHeight = Math.min(Math.round(WIN_HEIGHT_MAX * mainUiScale), wh);
   const win = new BrowserWindow({
     width: winWidth, height: winHeight,
     x: wx + ww - winWidth, y: wy + wh - winHeight,
+    icon: path.join(__dirname, '../assets/icon.ico'),
     resizable: false, frame: false,
     transparent: true, backgroundColor: '#00000000',
     webPreferences: {
@@ -347,29 +382,10 @@ function createWindow() {
     },
   });
 
-  setWinShape(win, winWidth, winHeight);
-
-  let moveTimer = null;
-  win.on('moved', () => {
-    // 즉시 shape 갱신 (DPI 클리핑 방지) — 현재 visible 높이 기준으로 적용
-    applyCurrentShape(win);
-    // 드래그 완료 후 새 모니터 기준으로 크기 재조정
-    clearTimeout(moveTimer);
-    moveTimer = setTimeout(() => {
-      const fb = win.getBounds();
-      const center = { x: fb.x + Math.round(fb.width / 2), y: fb.y + Math.round(fb.height / 2) };
-      const display = screen.getDisplayNearestPoint(center);
-      const { x: dx, y: dy, width: dw, height: dh } = display.workArea;
-      const newW = Math.round(dw / WIN_WIDTH_DIVISOR);
-      const newH = fb.height; // 높이는 현재값 유지
-      const newX = Math.max(dx, Math.min(fb.x, dx + dw - newW));
-      const newY = Math.max(dy, Math.min(fb.y, dy + dh - newH));
-      if (newW !== fb.width || newX !== fb.x || newY !== fb.y) {
-        win.setBounds({ x: newX, y: newY, width: newW, height: newH });
-        applyCurrentShape(win);
-      }
-    }, WIN_MOVE_DEBOUNCE_MS);
-  });
+  win.webContents.on('did-finish-load', () => applyUiScale(win, mainUiScale));
+  // Note: the window keeps its launch-monitor size when dragged to another monitor.
+  // We deliberately don't resize on monitor change — calling setBounds around a
+  // native drag teleports the window in this environment.
 
   win.loadFile(path.join(__dirname, 'renderer/index.html'));
   mainWindow = win;
