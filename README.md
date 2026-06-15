@@ -9,6 +9,10 @@
 
 [![release](https://img.shields.io/github/v/release/gksfidwndnjs/YoutubePlayer)](https://github.com/gksfidwndnjs/YoutubePlayer/releases/latest)
 
+<br>
+
+<img src="assets/screenshot.png" width="440" alt="YouTube Player widget screenshot">
+
 </div>
 
 ---
