@@ -1,8 +1,9 @@
 <div align="center">
 
-<img src="assets/icon.png" width="120" alt="YouTube Player icon">
+<img src="assets/icon.png" width="120" alt="Metalwave for YouTube icon">
 
-# YouTube Player
+# Metalwave for YouTube
+### (YouTube Music Player)
 
 화면 우하단에 도킹되는 **컴팩트 YouTube 음악 플레이어 위젯**
 브러시드 메탈 + CRT 그린 레트로 UI · Windows · Electron
@@ -15,7 +16,7 @@
 
 ## 소개
 
-YouTube Player는 작업 중에 한쪽 구석에 띄워두고 쓰는 작은 데스크톱 음악 플레이어입니다.
+Metalwave for YouTube는 작업 중에 한쪽 구석에 띄워두고 쓰는 작은 데스크톱 음악 플레이어입니다.
 브라우저 탭을 따로 열지 않고도 YouTube 음원을 검색·재생·다운로드할 수 있으며,
 평소엔 플레이어 바만 보이다가 토글하면 재생목록이 제자리에서 부드럽게 펼쳐집니다.
 
