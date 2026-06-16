@@ -480,9 +480,26 @@ function createWindow() {
 // ready we offer a restart, and otherwise install on the next quit.
 function setupAutoUpdate() {
   if (!app.isPackaged) return;
-  autoUpdater.autoDownload = true;
+  // Don't download silently — on launch, tell the user a new version exists and
+  // let them choose. Only download (and later restart) on their confirmation.
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on('error', (err) => console.error('[updater]', err?.message || err));
+
+  autoUpdater.on('update-available', async (info) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      buttons: ['업데이트', '나중에'],
+      defaultId: 0,
+      cancelId: 1,
+      title: '업데이트 있음',
+      message: `새로운 업데이트가 있습니다 (v${info.version}).`,
+      detail: '지금 다운로드하여 업데이트할까요?',
+    });
+    if (response === 0) autoUpdater.downloadUpdate().catch((e) => console.error('[updater]', e?.message || e));
+  });
+
   autoUpdater.on('update-downloaded', async (info) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const { response } = await dialog.showMessageBox(mainWindow, {
@@ -491,11 +508,12 @@ function setupAutoUpdate() {
       defaultId: 0,
       cancelId: 1,
       title: '업데이트 준비됨',
-      message: `새 버전 ${info.version}이(가) 준비됐습니다.`,
-      detail: '지금 재시작하면 업데이트가 적용됩니다. 나중을 선택하면 다음 종료 시 자동 적용됩니다.',
+      message: `업데이트가 다운로드됐습니다 (v${info.version}).`,
+      detail: '지금 재시작하면 적용됩니다. 나중을 선택하면 다음 종료 시 자동 적용됩니다.',
     });
     if (response === 0) autoUpdater.quitAndInstall(true, true);
   });
+
   autoUpdater.checkForUpdates().catch((err) => console.error('[updater]', err?.message || err));
 }
 
