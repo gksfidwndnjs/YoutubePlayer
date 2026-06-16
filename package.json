@@ -1,7 +1,7 @@
 {
   "name": "youtube-player",
-  "version": "1.1.0",
-  "description": "YouTube player desktop app",
+  "version": "1.2.0",
+  "description": "Metalwave for YouTube — compact desktop YouTube music player widget",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
@@ -10,7 +10,7 @@
   },
   "build": {
     "appId": "com.youtubeplayer.app",
-    "productName": "YouTube Player",
+    "productName": "Metalwave for YouTube",
     "directories": {
       "output": "dist"
     },
