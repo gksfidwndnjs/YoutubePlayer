@@ -2,8 +2,8 @@ node_modules/
 .claude/
 *.log
 dist/
-build/
-# but keep the NSIS installer customization (a source file, needed to build)
+# ignore build/ contents (not the dir itself) so the NSIS source below can be kept
+build/*
 !build/installer.nsh
 docs/
 
