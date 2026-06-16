@@ -1296,6 +1296,28 @@ input[type="range"]::-webkit-slider-thumb {
 .modal-box input { width: 100%; margin-bottom: 16px; font-size: 13px; }
 .modal-actions { display: flex; gap: 8px; align-items: center; }
 
+/* ── First-run setup (CRT) ── */
+.setup-box {
+  width: 320px;
+  background: var(--crt-bg-gradient);
+  border: var(--crt-border); border-top-color: var(--crt-border-top);
+  box-shadow: var(--crt-shadow);
+  color: var(--crt-green);
+}
+.setup-box h2 { color: #00e857; text-shadow: 0 0 8px rgba(0,232,87,0.6); }
+.setup-box p { color: rgba(0,232,87,0.6); text-shadow: 0 0 5px rgba(0,232,87,0.2); line-height: 1.8; }
+.setup-box .settings-label { color: #00e857; text-shadow: 0 0 6px rgba(0,232,87,0.5); }
+.setup-box input[type="text"] {
+  background-image:
+    repeating-linear-gradient(0deg, transparent 0px, transparent 3px, rgba(0,0,0,0.13) 3px, rgba(0,0,0,0.13) 4px),
+    var(--crt-bg-gradient);
+  background-color: #0c120e;
+  color: var(--crt-green); text-shadow: 0 0 6px rgba(0,232,87,0.7);
+  border: var(--crt-border); border-top-color: var(--crt-border-top);
+  box-shadow: var(--crt-shadow); margin-bottom: 0;
+}
+.setup-box input[type="text"]::placeholder { color: rgba(0,232,87,0.3); text-shadow: none; }
+
 /* ── Toast ── */
 
 #toast-container {

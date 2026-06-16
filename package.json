@@ -1,6 +1,6 @@
 {
   "name": "youtube-player",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Metalwave for YouTube — compact desktop YouTube music player widget",
   "main": "src/main.js",
   "scripts": {
@@ -37,12 +37,14 @@
       ]
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": false,
-      "createDesktopShortcut": true,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": false,
       "createStartMenuShortcut": true,
-      "shortcutName": "Metalwave for YouTube"
+      "shortcutName": "Metalwave for YouTube",
+      "include": "build/installer.nsh"
     },
     "publish": {
       "provider": "github",

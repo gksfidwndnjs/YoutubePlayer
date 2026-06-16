@@ -1166,6 +1166,26 @@ function initPlaylistModal() {
 
 // ── Init ───────────────────────────────────────────────────────────────────
 
+// One-time first-run setup: only on a truly fresh install (no settings file yet).
+// Lets the user pick the music storage folder before using the app.
+function maybeShowFirstRunSetup(saved) {
+  if (state.settings.setupComplete || Object.keys(saved || {}).length > 0) return;
+  const modal = el('setup-modal');
+  const input = el('setup-music-dir');
+  input.value = state.settings.musicDir || '';
+  modal.classList.remove('hidden');
+  el('setup-browse-btn').onclick = async () => {
+    const dir = await ipcRenderer.invoke('choose-music-dir');
+    if (dir) input.value = dir;
+  };
+  el('setup-start-btn').onclick = async () => {
+    state.settings.musicDir = input.value.trim();
+    state.settings.setupComplete = true;
+    await ipcRenderer.invoke('save-settings', state.settings);
+    modal.classList.add('hidden');
+  };
+}
+
 async function init() {
   const [saved, savedPlaylists] = await Promise.all([
     ipcRenderer.invoke('get-settings'),
@@ -1201,6 +1221,8 @@ async function init() {
   initIPCHandlers();
   initPlaylistModal();
   applyMetalTexture();
+
+  maybeShowFirstRunSetup(saved);
 
   window.addEventListener('beforeunload', saveLastPlayback);
 

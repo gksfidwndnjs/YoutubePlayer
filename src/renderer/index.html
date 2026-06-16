@@ -190,6 +190,23 @@
   </div>
 </div>
 
+<!-- First-run setup -->
+<div id="setup-modal" class="modal hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-box setup-box">
+    <h2>초기 설정</h2>
+    <p>다운로드한 곡을 저장할 폴더를 선택하세요. 비워두면 기본 음악 폴더를 사용합니다. 나중에 설정에서 바꿀 수 있습니다.</p>
+    <div class="settings-label">음악 저장 폴더</div>
+    <div class="settings-field-row" style="margin-top:8px">
+      <input id="setup-music-dir" type="text" readonly spellcheck="false" placeholder="(기본 음악 폴더)">
+      <button id="setup-browse-btn" class="btn-3d">찾기…</button>
+    </div>
+    <div class="modal-actions" style="margin-top:20px; justify-content:flex-end">
+      <button id="setup-start-btn" class="btn-3d">시작하기</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast-container"></div>
 
 <script src="app.js"></script>
