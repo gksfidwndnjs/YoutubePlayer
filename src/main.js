@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, session, screen, Menu, dialog } = require('
 const path = require('path');
 const fs = require('fs');
 const { create: createYoutubeDl } = require('youtube-dl-exec');
+const { autoUpdater } = require('electron-updater');
 const oauth = require('./oauth');
 
 // ── Constants ─────────────────────────────────────────────────────────────
@@ -472,6 +473,31 @@ function createWindow() {
   mainWindow = win;
 }
 
+// ── Auto-update (GitHub releases via electron-updater) ──────────────────────
+// Only runs in the packaged (NSIS) build — in dev there's no app-update.yml and
+// the updater would throw. New versions are downloaded in the background; once
+// ready we offer a restart, and otherwise install on the next quit.
+function setupAutoUpdate() {
+  if (!app.isPackaged) return;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('error', (err) => console.error('[updater]', err?.message || err));
+  autoUpdater.on('update-downloaded', async (info) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      buttons: ['지금 재시작', '나중에'],
+      defaultId: 0,
+      cancelId: 1,
+      title: '업데이트 준비됨',
+      message: `새 버전 ${info.version}이(가) 준비됐습니다.`,
+      detail: '지금 재시작하면 업데이트가 적용됩니다. 나중을 선택하면 다음 종료 시 자동 적용됩니다.',
+    });
+    if (response === 0) autoUpdater.quitAndInstall(true, true);
+  });
+  autoUpdater.checkForUpdates().catch((err) => console.error('[updater]', err?.message || err));
+}
+
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   settingsPath  = path.join(app.getPath('userData'), 'settings.json');
@@ -490,6 +516,7 @@ app.whenReady().then(() => {
     : ffmpegStatic;
   session.defaultSession.setUserAgent(USER_AGENT);
   createWindow();
+  setupAutoUpdate();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
