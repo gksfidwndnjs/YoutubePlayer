@@ -21,6 +21,16 @@ YouTube Player는 작업 중에 한쪽 구석에 띄워두고 쓰는 작은 데�
 
 전체 UI는 브러시드 스테인리스 메탈 베젤과 CRT 그린 화면 톤으로 꾸며진 레트로 미니 기기 컨셉입니다.
 
+## 미리보기
+
+<div align="center">
+
+| 재생목록 접힘 (플레이어) | 재생목록 펼침 |
+|:--:|:--:|
+| <img src="assets/preview-collapsed.png" width="330" alt="재생목록 접힘"> | <img src="assets/preview-expanded.png" width="330" alt="재생목록 펼침"> |
+
+</div>
+
 ## 주요 기능
 
 ### 재생
@@ -72,47 +82,18 @@ YouTube Player는 작업 중에 한쪽 구석에 띄워두고 쓰는 작은 데�
 3. 검색 또는 재생목록 URL로 곡을 큐에 추가하고 재생합니다.
 4. 위치 버튼으로 원하는 모니터·코너에 배치하세요.
 
-## 소스에서 빌드
+## Google 로그인
 
-```bash
-# 의존성 설치
-npm install
+설정(⚙)에서 **Google 로그인** 버튼을 누르면 본인의 YouTube 재생목록(좋아요 포함)을 앱으로 불러옵니다. **별도 설정이나 키 입력은 필요 없습니다.**
 
-# 개발 실행
-npm start
+1. 버튼을 누르면 브라우저에 Google 로그인 창이 열립니다.
+2. 처음에는 **"Google에서 확인하지 않은 앱"** 경고가 보일 수 있습니다 → **고급 → "Metalwave for YouTube(으)로 이동" → 허용**.
+   (Google 검증을 받지 않은 앱이라 표시되는 정상적인 안내입니다.)
+3. 동의하면 재생목록이 **로컬 / Google 계정** 카테고리로 나뉘어 나타납니다.
 
-# Windows portable exe 빌드 (dist/ 에 생성)
-npm run build
-```
-
-> 빌드는 Windows에서 실행하세요. (Linux/WSL에서는 Windows 코드 서명에 wine이 필요합니다.)
-
-### Google 로그인 설정 (포크/직접 빌드 시)
-
-Google 로그인 기능을 쓰려면 본인 소유의 OAuth 클라이언트가 필요합니다 (공개 리포에는 자격증명이 들어있지 않습니다).
-
-1. [Google Cloud Console](https://console.cloud.google.com/) → 프로젝트 생성
-2. **YouTube Data API v3** 사용 설정
-3. **OAuth 동의 화면** 구성 — 범위에 `.../auth/youtube.readonly` 추가, 테스트 사용자에 본인 추가
-4. **사용자 인증 정보 → OAuth 클라이언트 ID → 데스크톱 앱** 생성
-5. `src/google-config.example.js`를 `src/google-config.js`로 복사하고 Client ID/Secret 입력
-
-```js
-// src/google-config.js  (gitignored — 리포에 커밋되지 않음, 빌드 시 .exe에만 포함)
-module.exports = {
-  clientId: '…apps.googleusercontent.com',
-  clientSecret: 'GOCSPX-…',
-};
-```
-
-> 데스크톱 앱 OAuth는 PKCE로 보호되며, Google은 설치형 앱의 client secret을 비밀로 취급하지 않습니다.
-> 임의의 사용자까지 로그인을 허용하려면 동의 화면을 **프로덕션으로 게시 + Google 앱 검증**이 필요합니다.
-
-앱 아이콘을 다시 생성하려면 (Pillow 필요):
-
-```bash
-python3 scripts/make_icon.py   # assets/icon.png + assets/icon.ico 재생성
-```
+- 앱은 **읽기 전용**(`youtube.readonly`) 권한만 사용합니다.
+- 인증 토큰은 **사용자 PC에만 저장**되며 외부 서버로 전송되지 않습니다 — [개인정보처리방침](https://gksfidwndnjs.github.io/privacy.html)
+- 로그아웃은 설정에서, 권한 철회는 [Google 계정 권한 페이지](https://myaccount.google.com/permissions)에서 가능합니다.
 
 ## 기술 스택
 
