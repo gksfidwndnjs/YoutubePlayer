@@ -1,8 +1,8 @@
 /* Press Start 2P with size-adjust: 72% so English glyphs render ~10px at 14px base */
 @font-face {
   font-family: 'RetroPixel';
-  src: url('./node_modules/@fontsource/press-start-2p/files/press-start-2p-latin-400-normal.woff2') format('woff2'),
-       url('./node_modules/@fontsource/press-start-2p/files/press-start-2p-latin-400-normal.woff') format('woff');
+  src: url('../../node_modules/@fontsource/press-start-2p/files/press-start-2p-latin-400-normal.woff2') format('woff2'),
+       url('../../node_modules/@fontsource/press-start-2p/files/press-start-2p-latin-400-normal.woff') format('woff');
   font-weight: 400;
   font-style: normal;
   size-adjust: 72%;
@@ -31,6 +31,9 @@
   --crt-scanline: repeating-linear-gradient(0deg, rgba(0,255,80,0.03) 0px, rgba(0,255,80,0.03) 1px, rgba(0,0,0,0.28) 1px, rgba(0,0,0,0.28) 2px, transparent 2px, transparent 4px);
   --window-radius: 18px;
   --radius: 6px;
+  /* User-configurable (Settings → UI). Default font = retro pixel. */
+  --app-font: 'RetroPixel', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+  --ui-scale: 1;
   --player-bar-h: 90px;
   --z-dropdown: 300;
   --z-toast: 200;
@@ -54,7 +57,7 @@
 html, body { height: 100%; background: transparent; }
 
 body {
-  font-family: 'RetroPixel', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+  font-family: var(--app-font);
   background: transparent;
   color: var(--text);
   font-size: 14px;
@@ -224,7 +227,7 @@ button.link-btn:hover { background: transparent; opacity: 0.8; }
 .video-card-info { flex: 1; min-width: 0; pointer-events: none; }
 
 .video-card-title {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale));
   font-weight: 500;
   line-height: 1.6;
   display: -webkit-box;
@@ -235,7 +238,7 @@ button.link-btn:hover { background: transparent; opacity: 0.8; }
 }
 
 .video-card-channel {
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale));
   color: var(--text-muted);
   margin-top: 4px;
   white-space: nowrap;
@@ -577,6 +580,22 @@ button.link-btn:hover { background: transparent; opacity: 0.8; }
   53% { filter: brightness(0.80); }
 }
 
+/* ── CRT 글로우 OFF (Settings → UI) ── */
+/* 패널의 펄스/플리커 애니메이션 + 외곽 녹색 블룸 + 본문 텍스트 글로우 제거 */
+.glow-off #player-info,
+.glow-off #playlist-crt,
+.glow-off #settings-crt {
+  animation: none !important;
+  box-shadow:
+    inset 2px 2px 5px rgba(0,0,0,0.7),
+    inset -1px -1px 2px rgba(0,255,80,0.04),
+    0 1px 0 rgba(255,255,255,0.10) !important;
+}
+.glow-off #video-title,
+.glow-off #video-channel,
+.glow-off #lyric-cur,
+.glow-off #lyric-next { text-shadow: none !important; }
+
 #player-info {
   flex: 1;
   min-width: 0;
@@ -623,7 +642,7 @@ button.link-btn:hover { background: transparent; opacity: 0.8; }
 }
 
 #video-title {
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale));
   font-weight: 700;
   line-height: 1.6;
   overflow: hidden;
@@ -635,7 +654,7 @@ button.link-btn:hover { background: transparent; opacity: 0.8; }
 }
 
 #video-channel {
-  font-size: 9px;
+  font-size: calc(9px * var(--ui-scale));
   color: rgba(0,232,87,0.6);
   text-shadow: 0 0 6px rgba(0,232,87,0.5);
   margin-top: 4px;
@@ -643,6 +662,101 @@ button.link-btn:hover { background: transparent; opacity: 0.8; }
   text-overflow: ellipsis;
   white-space: nowrap;
   position: relative; z-index: 1;
+}
+
+/* ── 가사 뷰 (info-view 와 같은 영역을 공유) ── */
+#info-view { position: relative; z-index: 1; }
+/* 가사 모드에서도 레이아웃 자리를 유지해 패널 높이를 고정 (display:none 아님) */
+#info-view.view-hidden { visibility: hidden; }
+
+/* 가사 뷰포트: 위쪽 줄이 '현재', 그 아래가 '다음'. 시간이 지나면 컨테이너가
+   위로 스크롤되어 현재 줄이 위로 올라가며 사라지고 다음 줄이 올라온다. */
+#lyrics-view {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  padding: 4px 22px 4px 10px;
+}
+#lyrics-view.hidden { display: none; }
+
+#lyrics-scroll {
+  transition: transform 0.45s cubic-bezier(0.22,0.61,0.36,1);
+  will-change: transform;
+}
+
+.lyric-line {
+  /* line-height 고정 → 모든 줄 박스 높이 동일(스크롤 계산용). 폰트 크기만 강조에 따라 다름 */
+  height: calc(18px * var(--ui-scale));
+  line-height: calc(18px * var(--ui-scale));
+  font-size: calc(10px * var(--ui-scale));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(0,232,87,0.32);
+  text-shadow: 0 0 5px rgba(0,232,87,0.2);
+  transition: color 0.3s ease, text-shadow 0.3s ease, opacity 0.3s ease;
+}
+
+/* 현재 줄: 크고 밝게 */
+.lyric-line.active {
+  font-size: calc(12px * var(--ui-scale));
+  font-weight: 700;
+  color: #00e857;
+  text-shadow: 0 0 8px rgba(0,232,87,0.8), 0 0 18px rgba(0,232,87,0.3);
+}
+/* 다음(바로 아래) 줄: 약간 밝게 */
+.lyric-line.active + .lyric-line { color: rgba(0,232,87,0.6); }
+/* 이미 지나간 줄: 위로 올라가며 흐려진다 */
+.lyric-line.past { opacity: 0.25; }
+
+/* 로딩 메시지 */
+.lyric-line.lyric-status {
+  color: rgba(0,232,87,0.55);
+  text-shadow: 0 0 6px rgba(0,232,87,0.4);
+}
+
+/* ── 전환 버튼 (패널 우하단) ── */
+#lyrics-toggle-btn {
+  position: absolute;
+  right: 4px;
+  bottom: 3px;
+  z-index: 4;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(0,255,80,0.2);
+  border-radius: 4px;
+  background: rgba(0,20,8,0.55);
+  color: rgba(0,232,87,0.55);
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+#lyrics-toggle-btn:hover {
+  color: #00e857;
+  border-color: rgba(0,255,80,0.5);
+  background: rgba(0,30,12,0.7);
+}
+#lyrics-toggle-btn.active {
+  color: #00e857;
+  border-color: rgba(0,255,80,0.55);
+  box-shadow: 0 0 7px rgba(0,232,87,0.4), inset 0 0 5px rgba(0,232,87,0.2);
+}
+/* 가사 없는 곡: X 아이콘 + 비활성화 */
+#lyrics-toggle-btn:disabled {
+  cursor: default;
+  color: rgba(0,232,87,0.28);
+  border-color: rgba(0,255,80,0.12);
+  background: rgba(0,20,8,0.4);
+  box-shadow: none;
+}
+#lyrics-toggle-btn:disabled:hover {
+  color: rgba(0,232,87,0.28);
+  border-color: rgba(0,255,80,0.12);
+  background: rgba(0,20,8,0.4);
 }
 
 /* ── Player controls ── */

@@ -66,6 +66,9 @@ function openPopup(ref, file, height, mw, { onLoad, onBlur, onClosed } = {}) {
   ref.win.webContents.once('did-finish-load', () => {
     ref.win.webContents.setVisualZoomLevelLimits(1, 1);
     ref.win.webContents.setZoomFactor(mainUiScale);
+    // Apply the user's font choice to every popup for a consistent look.
+    const s = readJSON(settingsPath, {});
+    ref.win.webContents.send('apply-font', { fontFamily: s.fontFamily, fontScale: s.fontScale });
     onLoad?.();
   });
   if (onBlur) ref.win.on('blur', onBlur);
@@ -192,17 +195,22 @@ function displayOfWindow(win) {
 function placeWindow(win, display, corner) {
   placedCorner = corner;
   const scale = computeUiScale(display);
-  applyUiScale(win, scale);
   const { x: ax, y: ay, width: aw, height: ah } = display.workArea;
   const width  = Math.round(DESIGN_WIDTH * scale);
   const height = Math.min(Math.round(mainWinDesignMaxH * scale), ah);
   const onRight  = corner === 'tr' || corner === 'br';
   const onBottom = corner === 'bl' || corner === 'br';
-  win.setBounds({
-    x: onRight  ? ax + aw - width  : ax,
-    y: onBottom ? ay + ah - height : ay,
-    width, height,
-  });
+  const x = onRight  ? ax + aw - width  : ax;
+  const y = onBottom ? ay + ah - height : ay;
+  // setBounds converts this DIP rect to physical pixels using the scale factor of
+  // the display the window currently sits on — not the target's. Crossing to a
+  // monitor with a different DPI therefore mis-lands (Windows clamps it into a
+  // corner of the wrong screen). Nudge the window onto the target display first
+  // (its centre, far from any edge so it lands there under either scale factor) so
+  // the real setBounds below is evaluated with the target display's DPI.
+  win.setPosition(Math.round(ax + aw / 2), Math.round(ay + ah / 2));
+  applyUiScale(win, scale);
+  win.setBounds({ x, y, width, height });
 }
 
 ipcMain.on('win-set-corner', (event, corner) => {

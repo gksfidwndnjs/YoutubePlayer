@@ -1,7 +1,30 @@
 'use strict';
 const { ipcRenderer } = require('electron');
-const { applyMetalTexture } = require('../texture');
+const { applyMetalTexture, applyFont } = require('../texture');
 document.addEventListener('DOMContentLoaded', () => applyMetalTexture([document.getElementById('popup-frame')]));
+
+ipcRenderer.on('apply-font', (_, f) => applyFont(f));
+
+// Read the current UI-page form values.
+function currentFont() {
+  return {
+    fontFamily: (document.querySelector('input[name="font-family"]:checked') || {}).value || 'pixel',
+    fontScale: parseFloat((document.querySelector('input[name="font-size"]:checked') || {}).value) || 1,
+    crtGlow: el('settings-crt-glow').checked,
+  };
+}
+
+// Live-preview font / 8-bit / glow in this window.
+function previewFont() { applyFont(currentFont()); }
+
+// ── Category tabs ─────────────────────────────────────────────────────────────
+document.querySelectorAll('.settings-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const page = tab.dataset.page;
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.toggle('active', t === tab));
+    document.querySelectorAll('.settings-page').forEach(p => p.classList.toggle('active', p.dataset.page === page));
+  });
+});
 
 ipcRenderer.on('settings-state', (_, settings) => {
   el('settings-api-key').value = settings.apiKey || '';
@@ -11,8 +34,24 @@ ipcRenderer.on('settings-state', (_, settings) => {
   if (qEl) qEl.checked = true;
   el('settings-autoadvance').checked = settings.autoAdvance !== false;
   el('settings-music-dir').value = settings.musicDir || '';
+
+  const fam = settings.fontFamily || 'pixel';
+  const famEl = document.querySelector(`input[name="font-family"][value="${fam}"]`);
+  if (famEl) famEl.checked = true;
+  const size = String(settings.fontScale ?? 1);
+  const sizeEl = document.querySelector(`input[name="font-size"][value="${size}"]`);
+  if (sizeEl) sizeEl.checked = true;
+  el('settings-crt-glow').checked = settings.crtGlow !== false;
+  previewFont();
+
   refreshGoogleStatus();
 });
+
+// Live-preview UI changes (font / size / glow / 8-bit) in this window.
+['font-family', 'font-size'].forEach(name =>
+  document.querySelectorAll(`input[name="${name}"]`).forEach(r =>
+    r.addEventListener('change', previewFont)));
+el('settings-crt-glow').addEventListener('change', previewFont);
 
 // ── Google account ──────────────────────────────────────────────────────────
 async function refreshGoogleStatus() {
@@ -67,7 +106,10 @@ el('save-btn').addEventListener('click', () => {
   const audioQuality = (document.querySelector('input[name="audio-quality"]:checked') || {}).value || 'best';
   const autoAdvance = el('settings-autoadvance').checked;
   const musicDir = el('settings-music-dir').value.trim();
-  ipcRenderer.send('settings-saved', { apiKey, audioQuality, autoAdvance, musicDir });
+  const fontFamily = (document.querySelector('input[name="font-family"]:checked') || {}).value || 'pixel';
+  const fontScale = parseFloat((document.querySelector('input[name="font-size"]:checked') || {}).value) || 1;
+  const crtGlow = el('settings-crt-glow').checked;
+  ipcRenderer.send('settings-saved', { apiKey, audioQuality, autoAdvance, musicDir, fontFamily, fontScale, crtGlow });
 });
 
 el('cancel-btn').addEventListener('click', () => window.close());

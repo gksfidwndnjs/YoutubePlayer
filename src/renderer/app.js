@@ -5,12 +5,22 @@ const { ipcRenderer } = require('electron');
 // ── Constants ─────────────────────────────────────────────────────────────
 
 const STORAGE_KEYS = { queue: 'yt_queue', apiKey: 'yt_api_key' };
-const DEFAULT_SETTINGS = { audioQuality: 'best', autoAdvance: true, volume: 1 };
+const DEFAULT_SETTINGS = {
+  audioQuality: 'best', autoAdvance: true, volume: 1,
+  fontFamily: 'pixel', fontScale: 1, crtGlow: true,
+};
+
+// Font/scale/glow/8-bit all live in texture.applyFont (shared with the popups).
+function applyFontSettings(s = state.settings) {
+  require('./texture').applyFont(s);
+}
 const DEFAULT_PLAYLIST_FOLDER = 'Queue';
 const TOAST_DURATION_MS = 3000;
 const PLAYBACK_SAVE_INTERVAL_MS = 5000;
 const SEARCH_MAX_RESULTS = 15;
 const YT_SEARCH_API = 'https://www.googleapis.com/youtube/v3/search';
+const LRCLIB_GET = 'https://lrclib.net/api/get';
+const LRCLIB_SEARCH = 'https://lrclib.net/api/search';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -28,7 +38,17 @@ const state = {
   downloadedIds: new Set(),
   downloading: new Set(),
   batchActive: false,
+  // Lyrics (LRCLIB). mode persists across tracks; lines/plain reset per track.
+  lyrics: {
+    mode: 'info',      // 'info' | 'lyrics'
+    videoId: null,
+    status: 'idle',    // 'idle' | 'loading' | 'synced' | 'plain' | 'none'
+    lines: [],         // [{ time:Number(sec), text:String }] for synced
+    activeIndex: -1,
+  },
 };
+
+const lyricsCache = new Map(); // videoId -> { status, lines, plain }
 
 async function refreshDownloadedIds() {
   try {
@@ -101,6 +121,9 @@ function escHtml(s) {
 }
 
 const truncate = (s, n) => s.length > n ? s.slice(0, n) + '…' : s;
+
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function formatTime(s) {
   if (!isFinite(s) || s < 0) return '0:00';
@@ -178,6 +201,238 @@ function updateVideoInfo(video) {
   el('video-channel').textContent = video.channel || 'NULL';
 }
 
+// ── Lyrics (LRCLIB) ──────────────────────────────────────────────────────────
+
+// YouTube titles are messy ("Artist - Song (Official Video) [4K]"). Strip the
+// noise and split into { artist, title } for an LRCLIB lookup.
+function parseTrackInfo(video) {
+  const NOISE = /\b(official\s*(music\s*)?(video|audio|lyric[s]?|m\/?v)|lyric[s]?|audio|video|m\/?v|hd|4k|8k|mv|visualizer|color\s*coded|performance|live|remaster(ed)?)\b/gi;
+  let t = (video.title || '')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/[「」『』【】]/g, ' ')
+    .replace(NOISE, ' ')
+    .replace(/[_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  let artist = '';
+  let title = t;
+  const m = t.split(/\s+[-–—|]\s+/);
+  if (m.length >= 2) {
+    artist = m[0].trim();
+    title = m.slice(1).join(' - ').trim();
+  } else {
+    // No separator: use the channel as the artist.
+    artist = (video.channel || '')
+      .replace(/\s*-\s*Topic$/i, '')
+      .replace(/\bVEVO\b/gi, '')
+      .replace(/\bOfficial\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  return { artist, title: title || t };
+}
+
+// Parse an LRC string into sorted [{ time, text }], dropping blank lines.
+function parseLRC(lrc) {
+  const out = [];
+  for (const raw of String(lrc).split(/\r?\n/)) {
+    const stamps = [...raw.matchAll(/\[(\d+):(\d+)(?:\.(\d+))?\]/g)];
+    if (!stamps.length) continue;
+    const text = raw.replace(/\[(\d+):(\d+)(?:\.(\d+))?\]/g, '').trim();
+    if (!text) continue;
+    for (const s of stamps) {
+      const min = parseInt(s[1], 10);
+      const sec = parseInt(s[2], 10);
+      const frac = s[3] ? parseFloat('0.' + s[3]) : 0;
+      out.push({ time: min * 60 + sec + frac, text });
+    }
+  }
+  out.sort((a, b) => a.time - b.time);
+  return out;
+}
+
+async function lrclibFetch(url) {
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// Returns { syncedLyrics, plainLyrics } or null.
+async function fetchLyrics({ artist, title }, duration) {
+  if (!title) return null;
+  const dur = Math.round(duration || 0);
+  // Exact match first (duration-disambiguated).
+  try {
+    const q = new URLSearchParams({ track_name: title, artist_name: artist });
+    if (dur) q.set('duration', String(dur));
+    const got = await lrclibFetch(`${LRCLIB_GET}?${q}`);
+    if (got && (got.syncedLyrics || got.plainLyrics)) return got;
+  } catch {}
+  // Fallback: search, then pick the closest duration (or first hit).
+  try {
+    const q = new URLSearchParams({ track_name: title });
+    if (artist) q.set('artist_name', artist);
+    const hits = await lrclibFetch(`${LRCLIB_SEARCH}?${q}`);
+    if (Array.isArray(hits) && hits.length) {
+      const withLyrics = hits.filter(h => h.syncedLyrics || h.plainLyrics);
+      if (!withLyrics.length) return null;
+      if (dur) {
+        withLyrics.sort((a, b) =>
+          Math.abs((a.duration || 0) - dur) - Math.abs((b.duration || 0) - dur));
+      }
+      return withLyrics[0];
+    }
+  } catch {}
+  return null;
+}
+
+function resetLyrics() {
+  state.lyrics.videoId = null;
+  state.lyrics.status = 'idle';
+  state.lyrics.lines = [];
+  state.lyrics.activeIndex = -1;
+  renderLyrics();
+  refreshLyricsView();
+}
+
+// Fetch + store lyrics for the current track. Called once duration is known.
+async function loadLyrics(video, duration) {
+  if (!video) return;
+  const videoId = video.videoId;
+  state.lyrics.videoId = videoId;
+  state.lyrics.activeIndex = -1;
+
+  const cached = lyricsCache.get(videoId);
+  if (cached) {
+    applyLyricsResult(videoId, cached);
+    return;
+  }
+
+  state.lyrics.status = 'loading';
+  state.lyrics.lines = [];
+  renderLyrics();
+  refreshLyricsView(); // loading: keep the toggle enabled, decide X only after
+
+  const data = await fetchLyrics(parseTrackInfo(video), duration);
+  if (state.lyrics.videoId !== videoId) return; // track changed mid-fetch
+
+  let result;
+  if (data && data.syncedLyrics) {
+    result = { status: 'synced', lines: parseLRC(data.syncedLyrics), plain: data.plainLyrics || '' };
+    if (!result.lines.length) result.status = data.plainLyrics ? 'plain' : 'none';
+  } else if (data && data.plainLyrics) {
+    result = { status: 'plain', lines: [], plain: data.plainLyrics };
+  } else {
+    result = { status: 'none', lines: [], plain: '' };
+  }
+  lyricsCache.set(videoId, result);
+  applyLyricsResult(videoId, result);
+}
+
+function applyLyricsResult(videoId, result) {
+  if (state.lyrics.videoId !== videoId) return;
+  state.lyrics.status = result.status;
+  state.lyrics.lines = result.lines || [];
+  state.lyrics.plain = result.plain || '';
+  state.lyrics.activeIndex = -1;
+  renderLyrics();
+  refreshLyricsView();
+}
+
+const LYRIC_ICON_NOTE = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>';
+const LYRIC_ICON_X = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+
+const hasLyrics = () => state.lyrics.status === 'synced' && state.lyrics.lines.length > 0;
+const isLyricsLoading = () => state.lyrics.status === 'loading';
+// Toggling is allowed while lyrics exist OR are still loading (decide X only after).
+const lyricsToggleable = () => hasLyrics() || isLyricsLoading();
+
+// Sync the toggle button + which view shows. While loading the toggle stays
+// enabled (lyrics view shows "불러오는 중…"); only after loading, a track with no
+// synced lyrics gets the X + disabled button and song-info is forced.
+function refreshLyricsView() {
+  const btn = el('lyrics-toggle-btn');
+  if (!btn) return;
+  const ok = lyricsToggleable();
+  btn.disabled = !ok;
+  btn.innerHTML = ok ? LYRIC_ICON_NOTE : LYRIC_ICON_X;
+  btn.title = ok ? '가사 / 곡 정보 전환' : '가사 없음';
+  const showLyrics = ok && state.lyrics.mode === 'lyrics';
+  el('info-view').classList.toggle('view-hidden', showLyrics);
+  el('lyrics-view').classList.toggle('hidden', !showLyrics);
+  btn.classList.toggle('active', showLyrics);
+  if (showLyrics && hasLyrics()) {
+    state.lyrics.activeIndex = -1;
+    updateLyricHighlight(el('youtube-player').currentTime || 0);
+  }
+}
+
+// Build the scrolling line list (one box per lyric). Loading shows a status
+// message; other no-lyrics states are handled by refreshLyricsView (song-info).
+function renderLyrics() {
+  const scroll = el('lyrics-scroll');
+  if (!scroll) return;
+  const L = state.lyrics;
+  L.lineH = 0; // re-measure after (re)build (font size may have changed)
+
+  if (L.status === 'synced' && L.lines.length) {
+    scroll.innerHTML = L.lines.map((_, i) => `<div class="lyric-line" data-i="${i}"></div>`).join('');
+    const nodes = scroll.children;
+    for (let i = 0; i < nodes.length; i++) nodes[i].textContent = L.lines[i].text;
+    L.activeIndex = -1;
+    // Jump to the top without animating the initial build.
+    scroll.style.transition = 'none';
+    scroll.style.transform = 'translateY(0)';
+    void scroll.offsetWidth;
+    scroll.style.transition = '';
+  } else if (L.status === 'loading') {
+    scroll.innerHTML = '<div class="lyric-line lyric-status"></div>';
+    scroll.firstChild.textContent = '가사 불러오는 중…';
+    scroll.style.transform = 'translateY(0)';
+  } else {
+    scroll.innerHTML = '';
+    scroll.style.transform = 'translateY(0)';
+  }
+}
+
+// Advance the highlighted line as playback moves, scrolling the list up so the
+// current line rises to the top (out-going line slides up and fades). From timeupdate.
+function updateLyricHighlight(currentTime) {
+  const L = state.lyrics;
+  if (L.mode !== 'lyrics' || L.status !== 'synced' || !L.lines.length) return;
+
+  let idx = -1;
+  for (let i = 0; i < L.lines.length; i++) {
+    if (L.lines[i].time <= currentTime) idx = i; else break;
+  }
+  const eff = idx >= 0 ? idx : 0; // before the first line, sit on line 0
+  if (eff === L.activeIndex) return;
+  L.activeIndex = eff;
+
+  const scroll = el('lyrics-scroll');
+  const nodes = scroll.children;
+  for (let i = 0; i < nodes.length; i++) {
+    nodes[i].classList.toggle('active', i === eff);
+    nodes[i].classList.toggle('past', i < eff);
+  }
+  // Measure a line box lazily (only valid while the view is visible).
+  if (!L.lineH && nodes[0]) L.lineH = nodes[0].offsetHeight;
+  const LH = L.lineH || 18;
+  scroll.style.transform = `translateY(${-eff * LH}px)`;
+}
+
+function setLyricsMode(mode) {
+  state.lyrics.mode = mode;
+  refreshLyricsView();
+}
+
+function toggleLyricsView() {
+  if (!lyricsToggleable()) return; // disabled only after loading with no lyrics
+  setLyricsMode(state.lyrics.mode === 'lyrics' ? 'info' : 'lyrics');
+}
+
 // ── Playback ───────────────────────────────────────────────────────────────
 
 function setLoading(on) {
@@ -216,6 +471,7 @@ async function playVideo(video) {
   setLoading(true);
   setAlbumArt(video);
   updateVideoInfo(video);
+  resetLyrics(); // cleared now; fetched once duration is known (loadedmetadata)
 
   renderQueue();
   el('progress-bar').value = 0;
@@ -410,6 +666,7 @@ function clearQueue() {
   el('player-disc').classList.remove('spinning');
   el('video-title').textContent = 'NULL';
   el('video-channel').textContent = 'NULL';
+  resetLyrics();
   updatePlayPauseBtn();
   renderQueue();
 }
@@ -453,6 +710,7 @@ function resetPlayer(titleText) {
   setLoading(false);
   el('video-title').textContent = 'NULL';
   el('video-channel').textContent = 'NULL';
+  resetLyrics();
   el('album-art').style.display = 'none';
   el('album-placeholder').style.display = '';
   el('player-disc').classList.remove('spinning');
@@ -743,6 +1001,7 @@ function initAudio(audio) {
     el('progress-bar').max = audio.duration;
     el('time-duration').textContent = formatTime(audio.duration);
     syncTrack(el('progress-bar'));
+    if (state.currentVideo) loadLyrics(state.currentVideo, audio.duration);
   });
 
   let seeking = false;
@@ -752,6 +1011,7 @@ function initAudio(audio) {
     el('progress-bar').value = audio.currentTime;
     el('time-current').textContent = formatTime(audio.currentTime);
     syncTrack(el('progress-bar'));
+    updateLyricHighlight(audio.currentTime);
     const now = Date.now();
     if (state.playing && now - lastSaveTime > PLAYBACK_SAVE_INTERVAL_MS) {
       lastSaveTime = now;
@@ -809,6 +1069,8 @@ function initControls() {
     updateRepeatBtn();
   });
 
+  el('lyrics-toggle-btn').addEventListener('click', toggleLyricsView);
+
   el('add-search-toggle').addEventListener('click', () => ipcRenderer.send('open-menu-popup'));
   el('playlist-panel-toggle').addEventListener('click', togglePlaylistPanel);
   el('playlist-dropdown-btn').addEventListener('click', () => ipcRenderer.send('open-playlist-popup'));
@@ -834,6 +1096,7 @@ function initIPCHandlers() {
     state.settings = { ...state.settings, ...data };
     state.apiKey = data.apiKey || '';
     await ipcRenderer.invoke('save-settings', state.settings);
+    applyFontSettings();
     updateKeyIndicator();
     refreshDownloadedIds();
     showToast('Settings saved', 'success');
@@ -920,6 +1183,8 @@ async function init() {
   state.apiKey = state.settings.apiKey || '';
   state.playlists = Array.isArray(savedPlaylists) ? savedPlaylists : [];
 
+  applyFontSettings();
+  refreshLyricsView(); // initial: no track → X + disabled
   updateKeyIndicator();
   renderQueue();
   refreshDownloadedIds();

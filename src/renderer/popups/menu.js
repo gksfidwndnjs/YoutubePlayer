@@ -1,7 +1,9 @@
 'use strict';
 const { ipcRenderer } = require('electron');
-const { applyMetalTexture } = require('../texture');
+const { applyMetalTexture, applyFont } = require('../texture');
 document.addEventListener('DOMContentLoaded', () => applyMetalTexture([document.getElementById('popup-frame')]));
+
+ipcRenderer.on('apply-font', (_, f) => applyFont(f));
 
 let apiKey = '';
 

@@ -20,12 +20,71 @@
       font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
       color: var(--text); text-shadow: 0 1px 3px rgba(0,0,0,0.95);
     }
-    .popup-section-body { padding: 12px 14px; flex: 1; overflow-y: auto; }
     .popup-footer {
       display: flex; gap: 8px; justify-content: flex-end;
       padding: 10px 14px; flex-shrink: 0;
       border-top: 1px solid rgba(0,0,0,0.35);
     }
+
+    /* ── CRT screen (재생목록 창과 동일한 톤) ── */
+    #settings-crt {
+      flex: 1; margin: 8px 10px; min-height: 0;
+      display: flex; flex-direction: column; overflow: hidden; position: relative;
+      background: var(--crt-bg-gradient);
+      border-radius: 8px;
+      border: var(--crt-border); border-top-color: var(--crt-border-top);
+      box-shadow: var(--crt-shadow);
+      animation: crt-flicker var(--crt-flicker-duration) infinite, crt-glow var(--crt-glow-duration) infinite;
+    }
+    #settings-crt::before {
+      content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none; border-radius: inherit;
+      background: var(--crt-scanline);
+    }
+    #settings-crt::after {
+      content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none; border-radius: inherit;
+      background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.45) 100%);
+    }
+
+    /* ── 카테고리 탭 ── */
+    #settings-tabs {
+      display: flex; flex-shrink: 0; position: relative; z-index: 1;
+      border-bottom: 1px solid rgba(0,232,87,0.18);
+    }
+    .settings-tab {
+      flex: 1; padding: 9px 4px; background: transparent; border: none; cursor: pointer;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+      color: rgba(0,232,87,0.42); text-shadow: 0 0 5px rgba(0,232,87,0.2);
+      border-bottom: 2px solid transparent; transition: color 0.15s, border-color 0.15s;
+    }
+    .settings-tab:hover { color: rgba(0,232,87,0.75); background: transparent; }
+    .settings-tab.active {
+      color: #00e857; text-shadow: 0 0 8px rgba(0,232,87,0.8), 0 0 18px rgba(0,232,87,0.3);
+      border-bottom-color: #00e857;
+    }
+
+    /* ── 페이지 영역 ── */
+    #settings-pages { flex: 1; overflow-y: auto; position: relative; z-index: 1; padding: 4px 4px 8px; }
+    .settings-page { display: none; }
+    .settings-page.active { display: block; }
+
+    /* ── CRT 녹색 텍스트 (회색 → 녹색으로 가독성 개선) ── */
+    .settings-section { padding: 14px 16px; border-bottom: 1px solid rgba(0,232,87,0.08); }
+    .settings-section:last-child { border-bottom: none; }
+    .settings-section-title {
+      color: rgba(0,232,87,0.85) !important;
+      text-shadow: 0 0 7px rgba(0,232,87,0.45); margin-bottom: 12px;
+    }
+    .settings-label {
+      color: #00e857 !important; text-shadow: 0 0 6px rgba(0,232,87,0.5);
+    }
+    .settings-hint { color: rgba(0,232,87,0.55) !important; text-shadow: 0 0 5px rgba(0,232,87,0.25); }
+    .settings-hint strong { color: rgba(0,232,87,0.8); }
+    .radio-option, .checkbox-option { color: rgba(0,232,87,0.8) !important; }
+    .radio-option span, .checkbox-option span { text-shadow: 0 0 5px rgba(0,232,87,0.3); }
+    .hint-inline { color: rgba(0,232,87,0.45) !important; text-shadow: none; }
+    #settings-gstatus { color: rgba(0,232,87,0.7) !important; }
+    .settings-row + .settings-row { margin-top: 14px; }
+
     input[type="text"], input[type="password"] {
       background-image:
         repeating-linear-gradient(0deg, transparent 0px, transparent 3px, rgba(0,0,0,0.13) 3px, rgba(0,0,0,0.13) 4px),
@@ -40,12 +99,6 @@
     }
     input[type="text"]::placeholder, input[type="password"]::placeholder { color: rgba(0,232,87,0.3); text-shadow: none; }
     input[type="text"]:focus, input[type="password"]:focus { outline: none; border-color: rgba(0,232,87,0.3); }
-    .settings-section-title { color: var(--text); text-shadow: 0 1px 2px rgba(0,0,0,0.8); margin-bottom: 10px; }
-    .settings-label { color: var(--text) !important; text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
-    .settings-hint { color: var(--text-muted); text-shadow: 0 1px 2px rgba(0,0,0,0.7); }
-    .radio-option span, .checkbox-option span { text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
-    .hint-inline { text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
-    .settings-row + .settings-row { margin-top: 14px; }
   </style>
 </head>
 <body>
@@ -59,63 +112,116 @@
     </button>
   </div>
 
-  <div class="popup-section-body">
-    <div class="settings-section">
-      <div class="settings-section-title">YouTube API</div>
-      <div class="settings-row">
-        <div class="settings-label">API Key</div>
-        <div class="settings-hint">Required for search. Get one free from <strong>Google Cloud Console</strong> → APIs &amp; Services → YouTube Data API v3.</div>
-        <div class="settings-field-row" style="margin-top:8px">
-          <input id="settings-api-key" type="password" placeholder="AIza…" spellcheck="false" autocomplete="off">
-          <button id="settings-key-toggle" class="btn-3d">Show</button>
-        </div>
-      </div>
+  <div id="settings-crt">
+    <div id="settings-tabs">
+      <button class="settings-tab active" data-page="general">일반</button>
+      <button class="settings-tab" data-page="playback">재생</button>
+      <button class="settings-tab" data-page="downloads">다운로드</button>
+      <button class="settings-tab" data-page="ui">UI</button>
     </div>
 
-    <div class="settings-section" style="margin-top:16px">
-      <div class="settings-section-title">Google 계정</div>
-      <div class="settings-row">
-        <div class="settings-hint">로그인하면 내 YouTube 재생목록(좋아요 포함)을 전부 불러옵니다.</div>
-        <div class="settings-field-row" style="margin-top:10px; align-items:center">
-          <span id="settings-gstatus" class="settings-hint">로그인 안 됨</span>
-          <button id="settings-google-btn" class="btn-3d" style="margin-left:auto">Google로 로그인</button>
-        </div>
-      </div>
-    </div>
+    <div id="settings-pages">
 
-    <div class="settings-section" style="margin-top:16px">
-      <div class="settings-section-title">Playback</div>
-      <div class="settings-row">
-        <div class="settings-label">Audio Quality</div>
-        <div class="settings-radio-group" style="margin-top:6px">
-          <label class="radio-option">
-            <input type="radio" name="audio-quality" value="best">
-            <span>Best available</span>
-          </label>
-          <label class="radio-option">
-            <input type="radio" name="audio-quality" value="standard">
-            <span>Standard <span class="hint-inline">(≤ 128 kbps, faster load)</span></span>
-          </label>
+      <!-- ── 일반 ── -->
+      <div class="settings-page active" data-page="general">
+        <div class="settings-section">
+          <div class="settings-section-title">YouTube API</div>
+          <div class="settings-row">
+            <div class="settings-label">API Key</div>
+            <div class="settings-hint">검색에 필요합니다. <strong>Google Cloud Console</strong> → APIs &amp; Services → YouTube Data API v3 에서 무료로 발급.</div>
+            <div class="settings-field-row" style="margin-top:8px">
+              <input id="settings-api-key" type="password" placeholder="AIza…" spellcheck="false" autocomplete="off">
+              <button id="settings-key-toggle" class="btn-3d">Show</button>
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="settings-row">
-        <label class="checkbox-option">
-          <input type="checkbox" id="settings-autoadvance">
-          <span>Auto-advance queue</span>
-        </label>
-      </div>
-    </div>
 
-    <div class="settings-section" style="margin-top:16px">
-      <div class="settings-section-title">Downloads</div>
-      <div class="settings-row">
-        <div class="settings-label">Music download folder</div>
-        <div class="settings-hint">Tracks are saved here as m4a + thumbnail. Downloaded tracks play from disk instead of streaming.</div>
-        <div class="settings-field-row" style="margin-top:8px">
-          <input id="settings-music-dir" type="text" readonly spellcheck="false" placeholder="(default Music folder)">
-          <button id="settings-browse-dir" class="btn-3d">Browse…</button>
+        <div class="settings-section">
+          <div class="settings-section-title">Google 계정</div>
+          <div class="settings-row">
+            <div class="settings-hint">로그인하면 내 YouTube 재생목록(좋아요 포함)을 전부 불러옵니다.</div>
+            <div class="settings-field-row" style="margin-top:10px; align-items:center">
+              <span id="settings-gstatus" class="settings-hint" style="margin:0">로그인 안 됨</span>
+              <button id="settings-google-btn" class="btn-3d" style="margin-left:auto">Google로 로그인</button>
+            </div>
+          </div>
         </div>
       </div>
+
+      <!-- ── 재생 ── -->
+      <div class="settings-page" data-page="playback">
+        <div class="settings-section">
+          <div class="settings-section-title">Playback</div>
+          <div class="settings-row">
+            <div class="settings-label">Audio Quality</div>
+            <div class="settings-radio-group" style="margin-top:6px">
+              <label class="radio-option">
+                <input type="radio" name="audio-quality" value="best">
+                <span>Best available</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="audio-quality" value="standard">
+                <span>Standard <span class="hint-inline">(≤ 128 kbps, faster load)</span></span>
+              </label>
+            </div>
+          </div>
+          <div class="settings-row">
+            <label class="checkbox-option">
+              <input type="checkbox" id="settings-autoadvance">
+              <span>Auto-advance queue</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 다운로드 ── -->
+      <div class="settings-page" data-page="downloads">
+        <div class="settings-section">
+          <div class="settings-section-title">Downloads</div>
+          <div class="settings-row">
+            <div class="settings-label">Music download folder</div>
+            <div class="settings-hint">트랙은 m4a + 썸네일로 저장됩니다. 다운로드한 곡은 스트리밍 대신 디스크에서 재생됩니다.</div>
+            <div class="settings-field-row" style="margin-top:8px">
+              <input id="settings-music-dir" type="text" readonly spellcheck="false" placeholder="(default Music folder)">
+              <button id="settings-browse-dir" class="btn-3d">Browse…</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── UI ── -->
+      <div class="settings-page" data-page="ui">
+        <div class="settings-section">
+          <div class="settings-section-title">글꼴</div>
+          <div class="settings-radio-group" id="font-family-group">
+            <label class="radio-option"><input type="radio" name="font-family" value="pixel"><span>레트로 픽셀 <span class="hint-inline">(기본)</span></span></label>
+            <label class="radio-option"><input type="radio" name="font-family" value="gothic"><span>고딕 (맑은 고딕)</span></label>
+            <label class="radio-option"><input type="radio" name="font-family" value="sans"><span>산세리프</span></label>
+            <label class="radio-option"><input type="radio" name="font-family" value="mono"><span>모노스페이스</span></label>
+            <label class="radio-option"><input type="radio" name="font-family" value="serif"><span>명조 (세리프)</span></label>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">효과</div>
+          <div class="settings-row">
+            <label class="checkbox-option">
+              <input type="checkbox" id="settings-crt-glow">
+              <span>CRT 글로우 효과</span>
+            </label>
+          </div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-section-title">글꼴 크기</div>
+          <div class="settings-hint">곡 제목 · 채널 · 가사 · 재생목록 텍스트에 적용됩니다.</div>
+          <div class="settings-radio-group" id="font-size-group" style="margin-top:6px">
+            <label class="radio-option"><input type="radio" name="font-size" value="0.9"><span>작게</span></label>
+            <label class="radio-option"><input type="radio" name="font-size" value="1"><span>보통 <span class="hint-inline">(기본)</span></span></label>
+            <label class="radio-option"><input type="radio" name="font-size" value="1.15"><span>크게</span></label>
+            <label class="radio-option"><input type="radio" name="font-size" value="1.3"><span>아주 크게</span></label>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 
