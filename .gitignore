@@ -3,6 +3,8 @@ node_modules/
 *.log
 dist/
 build/
+# but keep the NSIS installer customization (a source file, needed to build)
+!build/installer.nsh
 docs/
 
 # Local Google OAuth credentials (bundled into builds, never in the repo)
