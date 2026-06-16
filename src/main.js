@@ -238,6 +238,7 @@ ipcMain.handle('toggle-always-on-top', (event) => {
   return win.isAlwaysOnTop();
 });
 
+ipcMain.handle('app-version',    () => app.getVersion());
 ipcMain.handle('get-settings',   () => readJSON(settingsPath, {}));
 ipcMain.handle('save-settings',  (_, data) => writeJSON(settingsPath, data));
 ipcMain.handle('get-playlists',  () => readJSON(playlistsPath, []));

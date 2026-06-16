@@ -1,7 +1,10 @@
 'use strict';
 const { ipcRenderer } = require('electron');
 const { applyMetalTexture, applyFont } = require('../texture');
-document.addEventListener('DOMContentLoaded', () => applyMetalTexture([document.getElementById('popup-frame')]));
+document.addEventListener('DOMContentLoaded', () => {
+  applyMetalTexture([document.getElementById('popup-frame')]);
+  ipcRenderer.invoke('app-version').then(v => { el('menu-version').textContent = 'v' + v; }).catch(() => {});
+});
 
 ipcRenderer.on('apply-font', (_, f) => applyFont(f));
 

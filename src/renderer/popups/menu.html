@@ -37,6 +37,11 @@
     }
     input[type="text"]::placeholder { color: rgba(0,232,87,0.3); text-shadow: none; }
     input[type="text"]:focus { outline: none; border-color: rgba(0,232,87,0.3); }
+    #menu-version {
+      margin-top: auto; padding: 6px 14px; flex-shrink: 0; text-align: right;
+      font-size: 9px; letter-spacing: 0.4px; color: var(--text-muted);
+      border-top: 1px solid rgba(0,0,0,0.35);
+    }
   </style>
 </head>
 <body>
@@ -65,6 +70,8 @@
     </div>
     <div id="search-results"></div>
   </div>
+
+  <div id="menu-version">v—</div>
 </div>
 <script src="menu.js"></script>
 </body>
