@@ -16,6 +16,8 @@ function applyFontSettings(s = state.settings) {
 }
 const DEFAULT_PLAYLIST_FOLDER = 'Queue';
 const TOAST_DURATION_MS = 3000;
+// Errors now carry a reason worth reading, so they linger longer than a status blip.
+const TOAST_ERROR_DURATION_MS = 9000;
 const PLAYBACK_SAVE_INTERVAL_MS = 5000;
 const SEARCH_MAX_RESULTS = 15;
 const YT_SEARCH_API = 'https://www.googleapis.com/youtube/v3/search';
@@ -76,7 +78,11 @@ function downloadTrack(video, { silent = false } = {}) {
       if (!silent) showToast(`다운로드 완료: ${truncate(video.title || video.videoId, 30)}`, 'success');
       resolveOuter();
     } catch (err) {
-      if (!silent) showToast(`다운로드 실패: ${truncate(video.title || video.videoId, 30)}`, 'error');
+      const reason = errorReason(err);
+      console.error('[download]', video.videoId, reason);
+      if (!silent) {
+        showToast(`다운로드 실패: ${truncate(video.title || video.videoId, 20)} — ${truncate(reason, 90)}`, 'error');
+      }
       rejectOuter(err);
     } finally {
       state.downloading.delete(video.videoId);
@@ -98,9 +104,9 @@ async function downloadAll() {
     try {
       await downloadTrack(video, { silent: true });
       ok++;
-    } catch {
+    } catch (err) {
       fail++;
-      showToast(`다운로드 실패 (스킵): ${truncate(video.title || video.videoId, 30)}`, 'error');
+      showToast(`다운로드 실패 (스킵): ${truncate(video.title || video.videoId, 20)} — ${truncate(errorReason(err), 90)}`, 'error');
     }
   }
   state.batchActive = false;
@@ -122,6 +128,13 @@ function escHtml(s) {
 
 const truncate = (s, n) => s.length > n ? s.slice(0, n) + '…' : s;
 
+// ipcRenderer.invoke wraps rejections as "Error invoking remote method 'x': Error: …";
+// strip that so the user sees what actually went wrong.
+const errorReason = (err) => String(err?.message || err)
+  .replace(/^Error invoking remote method '[^']*':\s*/, '')
+  .replace(/^Error:\s*/, '')
+  .trim();
+
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -140,7 +153,7 @@ function showToast(msg, type = '') {
   t.className = 'toast' + (type ? ' ' + type : '');
   t.textContent = msg;
   el('toast-container').appendChild(t);
-  setTimeout(() => t.remove(), TOAST_DURATION_MS);
+  setTimeout(() => t.remove(), type === 'error' ? TOAST_ERROR_DURATION_MS : TOAST_DURATION_MS);
 }
 
 // ── ID / URL extraction ───────────────────────────────────────────────────
@@ -901,32 +914,41 @@ function togglePlaylistPanel() {
   updateClickThrough(); // visible UI area changed
 }
 
-// ── Update download progress ───────────────────────────────────────────────
-// The updater downloads ~120 MB with no feedback otherwise, so mirror its
-// progress in a bar above the player bar (the taskbar button shows it too).
+// ── Long-task progress bar ─────────────────────────────────────────────────
+// Shared by anything slow enough to need feedback: the ~120 MB update download
+// and moving a music library between folders. The taskbar button mirrors it.
 
 const toMB = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
 
-function showUpdateProgress({ percent = 0, transferred = 0, total = 0, bytesPerSecond = 0 }) {
+function showProgress({ label = '작업 중', percent = 0, detail = '' }) {
   const box = el('update-progress');
   const wasHidden = box.classList.contains('hidden');
   box.classList.remove('hidden');
 
   const pct = Math.min(100, Math.max(0, percent));
   el('update-progress-fill').style.width = pct + '%';
-  el('update-progress-label').textContent = `업데이트 다운로드 중 ${Math.round(pct)}%`;
-  el('update-progress-meta').textContent = total
-    ? `${toMB(transferred)} / ${toMB(total)} MB${bytesPerSecond ? ` · ${toMB(bytesPerSecond)} MB/s` : ''}`
-    : '준비 중…';
+  el('update-progress-label').textContent = `${label} ${Math.round(pct)}%`;
+  el('update-progress-meta').textContent = detail;
 
   if (wasHidden) syncWindowHeight(); // the bar adds height to the visible UI
 }
 
-function hideUpdateProgress({ error, version } = {}) {
+function hideProgress({ error, message } = {}) {
   el('update-progress').classList.add('hidden');
   syncWindowHeight();
-  if (error) showToast(`업데이트 다운로드 실패 — ${truncate(String(error), 60)}`, 'error');
-  else if (version) showToast(`업데이트 다운로드 완료 (v${version})`, 'success');
+  if (error) showToast(truncate(String(error), 100), 'error');
+  else if (message) showToast(message, 'success');
+}
+
+// The updater reports bytes; translate that into the shared bar's shape.
+function showUpdateProgress({ percent = 0, transferred = 0, total = 0, bytesPerSecond = 0 }) {
+  showProgress({
+    label: '업데이트 다운로드 중',
+    percent,
+    detail: total
+      ? `${toMB(transferred)} / ${toMB(total)} MB${bytesPerSecond ? ` · ${toMB(bytesPerSecond)} MB/s` : ''}`
+      : '준비 중…',
+  });
 }
 
 // ── Click-through for the transparent empty area ────────────────────────────
@@ -1104,6 +1126,25 @@ async function restorePlayback(saved) {
 
 const openSettings = () => ipcRenderer.send('open-settings-popup');
 
+// Offer to bring existing downloads along when the music folder changes. The
+// prompt and the move both live in main; this just reports the outcome.
+async function migrateMusicDir(from, to) {
+  try {
+    const r = await ipcRenderer.invoke('migrate-music-dir', from, to);
+    if (r?.skipped) return;
+    if (r?.kept) {
+      showToast('기존 다운로드는 이전 폴더에 남겨뒀습니다.', 'error');
+      return;
+    }
+    const parts = [`${r.moved}개 이동`];
+    if (r.skipped) parts.push(`${r.skipped}개 건너뜀`);
+    if (r.failed) parts.push(`${r.failed}개 실패`);
+    showToast(`음악 폴더 이동 완료 — ${parts.join(' / ')}`, r.failed ? 'error' : 'success');
+  } catch (err) {
+    showToast(`폴더 이동 실패 — ${truncate(errorReason(err), 80)}`, 'error');
+  }
+}
+
 function updateKeyIndicator() {
   el('key-indicator').className = 'key-dot ' + (state.apiKey ? 'has-key' : 'no-key');
 }
@@ -1242,7 +1283,10 @@ function initControls() {
 
 function initIPCHandlers() {
   ipcRenderer.on('update-progress', (_, p) => showUpdateProgress(p));
-  ipcRenderer.on('update-progress-done', (_, r) => hideUpdateProgress(r));
+  ipcRenderer.on('update-progress-done', (_, r) => hideProgress(
+    r?.error ? { error: `업데이트 다운로드 실패 — ${r.error}` }
+             : { message: r?.version ? `업데이트 다운로드 완료 (v${r.version})` : '' }));
+  ipcRenderer.on('task-progress', (_, p) => showProgress(p));
 
   ipcRenderer.on('send-menu-state', () =>
     ipcRenderer.send('push-menu-state', { apiKey: state.apiKey }));
@@ -1251,13 +1295,20 @@ function initIPCHandlers() {
     ipcRenderer.send('push-settings-state', state.settings));
 
   ipcRenderer.on('settings-saved', async (_, data) => {
+    // Resolve before/after rather than comparing the raw setting: an empty value
+    // means "default Music folder", so the stored strings can differ while the
+    // actual folder doesn't (and vice versa).
+    const before = (await ipcRenderer.invoke('music-dir-info')).dir;
     state.settings = { ...state.settings, ...data };
     state.apiKey = data.apiKey || '';
     await ipcRenderer.invoke('save-settings', state.settings);
     applyFontSettings();
     updateKeyIndicator();
-    refreshDownloadedIds();
     showToast('Settings saved', 'success');
+
+    const after = (await ipcRenderer.invoke('music-dir-info')).dir;
+    if (after !== before) await migrateMusicDir(before, after);
+    refreshDownloadedIds();
   });
 
   ipcRenderer.on('send-playlist-state', () =>

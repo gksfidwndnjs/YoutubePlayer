@@ -94,6 +94,16 @@ el('settings-browse-dir').addEventListener('click', async () => {
   if (dir) el('settings-music-dir').value = dir;
 });
 
+el('settings-open-log').addEventListener('click', async () => {
+  const btn = el('settings-open-log');
+  const opened = await ipcRenderer.invoke('open-download-log');
+  // openPath resolves to '' on success, or an error string; null means no log yet.
+  if (opened === null) {
+    btn.textContent = '기록된 오류 없음';
+    setTimeout(() => { btn.textContent = '로그 열기'; }, 2000);
+  }
+});
+
 el('settings-key-toggle').addEventListener('click', () => {
   const input = el('settings-api-key');
   const show = input.type === 'password';

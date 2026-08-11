@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, screen, Menu, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, session, screen, Menu, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { create: createYoutubeDl } = require('youtube-dl-exec');
@@ -424,6 +424,34 @@ function findLocalAudioFile(videoId) {
   return getLocalAudioIndex().get(videoId) || null;
 }
 
+// execa's own message is just the command line; yt-dlp's actual reason is the last
+// "ERROR:" line on stderr. Without this the UI could only ever say "failed".
+function ytDlpErrorReason(err) {
+  const lines = String(err?.stderr || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const errLine = [...lines].reverse().find(l => /^ERROR:/i.test(l));
+  return errLine?.replace(/^ERROR:\s*/i, '')
+    || lines[lines.length - 1]
+    || err?.shortMessage || err?.message || String(err);
+}
+
+// Failures are worth keeping: a toast is gone in seconds and packaged builds have no
+// console. The full stderr lands in userData/download-errors.log.
+function logDownloadFailure(videoId, reason, err) {
+  try {
+    const stderr = String(err?.stderr || '').trim();
+    fs.appendFileSync(
+      path.join(app.getPath('userData'), 'download-errors.log'),
+      `[${new Date().toISOString()}] ${videoId} — ${reason}\n${stderr}\n\n`,
+      'utf8',
+    );
+  } catch {}
+}
+
+ipcMain.handle('open-download-log', () => {
+  const file = path.join(app.getPath('userData'), 'download-errors.log');
+  return fs.existsSync(file) ? shell.openPath(file) : null;
+});
+
 ipcMain.handle('download-track', async (_, videoId, playlistName) => {
   // The renderer also guards on its cached id set, but that cache can be stale —
   // the on-disk index is the authority, so never spawn yt-dlp for a file we have.
@@ -432,14 +460,20 @@ ipcMain.handle('download-track', async (_, videoId, playlistName) => {
   const root = getMusicDir();
   const sub = path.join(root, sanitizeFolderName(playlistName));
   if (!fs.existsSync(sub)) fs.mkdirSync(sub, { recursive: true });
-  await youtubeDl(YT_WATCH_URL(videoId), {
-    format: 'bestaudio[ext=m4a]/bestaudio',
-    output: path.join(sub, '%(title)s [%(id)s].%(ext)s'),
-    embedThumbnail: true,
-    ffmpegLocation: ffmpegPath,
-    noPlaylist: true,
-    noWarnings: true,
-  });
+  try {
+    await youtubeDl(YT_WATCH_URL(videoId), {
+      format: 'bestaudio[ext=m4a]/bestaudio',
+      output: path.join(sub, '%(title)s [%(id)s].%(ext)s'),
+      embedThumbnail: true,
+      ffmpegLocation: ffmpegPath,
+      noPlaylist: true,
+      noWarnings: true,
+    });
+  } catch (err) {
+    const reason = ytDlpErrorReason(err);
+    logDownloadFailure(videoId, reason, err);
+    throw new Error(reason);
+  }
   invalidateLocalAudioIndex();
   return { dir: sub };
 });
@@ -482,6 +516,103 @@ ipcMain.handle('music-dir-info', () => {
   const dir = getMusicDir();
   const cloudRoot = cloudSyncRootOf(dir);
   return { dir, cloudSync: cloudRoot && hasDehydratedFiles() ? cloudRoot : null };
+});
+
+// ── Moving the music library between folders ────────────────────────────────
+// Changing the download folder used to strand every previous download: the app
+// only looks in the current folder, so the old files silently stopped counting as
+// downloaded. Offer to bring them along.
+
+function listFilesRecursive(dir, out = []) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) listFilesRecursive(p, out);
+    else out.push(p);
+  }
+  return out;
+}
+
+// Depth-first so children are gone before their parent is tried; only ever removes
+// directories that are already empty.
+function pruneEmptyDirs(dir) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    if (entry.isDirectory()) pruneEmptyDirs(path.join(dir, entry.name));
+  }
+  try {
+    if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+  } catch {}
+}
+
+const formatSize = (bytes) => bytes >= 1024 ** 3
+  ? `${(bytes / 1024 ** 3).toFixed(1)} GB`
+  : `${Math.round(bytes / 1024 ** 2)} MB`;
+
+ipcMain.handle('migrate-music-dir', async (_, fromDir, toDir) => {
+  if (!fromDir || !toDir) return { skipped: true };
+  if (path.resolve(fromDir).toLowerCase() === path.resolve(toDir).toLowerCase()) return { skipped: true };
+
+  const files = listFilesRecursive(fromDir);
+  if (!files.length) return { skipped: true, empty: true };
+
+  let totalBytes = 0;
+  for (const f of files) { try { totalBytes += fs.statSync(f).size; } catch {} }
+
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['옮기기', '그대로 두기'],
+    defaultId: 0,
+    cancelId: 1,
+    title: '음악 폴더 변경',
+    message: `기존 폴더에 파일 ${files.length}개 (${formatSize(totalBytes)})가 있습니다.`,
+    detail: `${fromDir}\n  ↓\n${toDir}\n\n새 폴더로 옮길까요?\n옮기지 않으면 기존에 받아둔 곡은 앱에서 인식되지 않아 다시 다운로드됩니다.`,
+  });
+  if (response !== 0) return { moved: 0, kept: true };
+
+  const send = (channel, payload) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+  };
+
+  let moved = 0, skipped = 0, failed = 0, doneBytes = 0;
+  for (let i = 0; i < files.length; i++) {
+    const src = files[i];
+    const dest = path.join(toDir, path.relative(fromDir, src));
+    let size = 0;
+    try { size = fs.statSync(src).size; } catch {}
+    try {
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      if (fs.existsSync(dest)) {
+        skipped++; // never clobber a file already at the destination
+      } else {
+        try {
+          await fs.promises.rename(src, dest);
+        } catch (err) {
+          // rename can't cross volumes — fall back to copy, and only then drop the original
+          if (err.code !== 'EXDEV') throw err;
+          await fs.promises.copyFile(src, dest);
+          await fs.promises.unlink(src);
+        }
+        moved++;
+      }
+    } catch (err) {
+      failed++;
+      console.error('[migrate]', src, err?.message || err);
+    }
+    doneBytes += size;
+    send('task-progress', {
+      label: '음악 폴더 이동 중',
+      percent: ((i + 1) / files.length) * 100,
+      detail: `${i + 1} / ${files.length} · ${formatSize(doneBytes)}`,
+    });
+  }
+
+  pruneEmptyDirs(fromDir);
+  invalidateLocalAudioIndex();
+  send('update-progress-done', {});
+  return { moved, skipped, failed, total: files.length };
 });
 
 ipcMain.handle('choose-music-dir', async (event) => {

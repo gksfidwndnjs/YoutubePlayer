@@ -1362,6 +1362,9 @@ input[type="range"]::-webkit-slider-thumb {
   line-height: 1.7;
   animation: toast-in 0.2s ease;
   pointer-events: auto;
+  /* Failure reasons can be long — wrap inside the narrow widget instead of overflowing. */
+  max-width: calc(100vw - 40px);
+  overflow-wrap: anywhere;
 }
 .toast.success { border-color: var(--green); }
 .toast.error   { border-color: var(--accent); }
