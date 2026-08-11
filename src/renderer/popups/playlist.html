@@ -54,6 +54,16 @@
       border: 1px solid rgba(0,232,87,0.2); border-radius: 3px;
       font-size: 9px; padding: 1px 5px;
     }
+    .pl-refresh-row { padding: 7px 10px 6px; border-bottom: 1px solid rgba(0,232,87,0.10); }
+    .pl-refresh-btn {
+      width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 6px 8px; font-size: 10px; cursor: pointer;
+      background: rgba(0,232,87,0.08); color: rgba(0,232,87,0.85);
+      border: 1px solid rgba(0,232,87,0.25); border-radius: 4px;
+    }
+    .pl-refresh-btn:hover:not(:disabled) { background: rgba(0,232,87,0.16); color: #00e857; }
+    .pl-refresh-btn:disabled { opacity: 0.4; cursor: default; }
+    .pl-nolink { color: rgba(255,196,0,0.75); font-size: 10px; cursor: help; }
     .delete-pl-btn {
       color: rgba(0,232,87,0.45) !important;
       font-size: 15px; line-height: 1; padding: 2px 5px !important;

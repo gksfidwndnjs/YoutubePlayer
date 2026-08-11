@@ -6,9 +6,24 @@ document.addEventListener('DOMContentLoaded', () => applyMetalTexture([document.
 ipcRenderer.on('apply-font', (_, f) => applyFont(f));
 ipcRenderer.on('playlist-state', (_, state) => render(state));
 
+// Mirrors app.js: a playlist can only be refreshed if we still know its source.
+const canRefresh = (pl) => (pl.source === 'google' ? !!pl.loaded : !!pl.ytId);
+
 function render({ playlists, activePlaylistId }) {
   const list = document.getElementById('playlist-list');
   list.innerHTML = '';
+
+  const refreshable = playlists.filter(canRefresh).length;
+  const bar = document.createElement('div');
+  bar.className = 'pl-refresh-row';
+  bar.innerHTML = `<button class="pl-refresh-btn btn-3d" ${refreshable ? '' : 'disabled'}>
+    ↻ <span>${refreshable ? `전체 갱신 (${refreshable})` : '갱신할 목록 없음'}</span>
+  </button>`;
+  bar.querySelector('.pl-refresh-btn').addEventListener('click', () => {
+    ipcRenderer.send('popup-action', { type: 'refresh-playlists' });
+    window.close();
+  });
+  list.appendChild(bar);
 
   // Queue option
   const queueItem = makeItem('Queue', null, !activePlaylistId, 0);
@@ -31,7 +46,7 @@ function appendSection(list, label, playlists, activePlaylistId) {
   list.appendChild(hdr);
 
   playlists.forEach(pl => {
-    const item = makeItem(pl.name, pl.id, activePlaylistId === pl.id, pl.tracks.length);
+    const item = makeItem(pl.name, pl.id, activePlaylistId === pl.id, pl.tracks.length, canRefresh(pl));
     item.addEventListener('click', e => {
       if (e.target.closest('.delete-pl-btn')) return;
       ipcRenderer.send('popup-action', { type: 'switch-playlist', id: pl.id });
@@ -45,12 +60,13 @@ function appendSection(list, label, playlists, activePlaylistId) {
   });
 }
 
-function makeItem(name, id, active, count) {
+function makeItem(name, id, active, count, refreshable = true) {
   const el = document.createElement('div');
   el.className = 'pl-item' + (active ? ' active' : '');
   el.innerHTML = `
     <span class="pl-item-name">${escHtml(name)}</span>
     <div class="pl-item-right">
+      ${refreshable ? '' : '<span class="pl-nolink" title="원본 링크 없음 — 갱신하려면 URL로 다시 추가하세요">⚠</span>'}
       ${count > 0 ? `<span class="count-badge">${count}</span>` : ''}
       ${id ? `<button class="btn-icon btn-3d delete-pl-btn" title="Delete">×</button>` : ''}
     </div>`;

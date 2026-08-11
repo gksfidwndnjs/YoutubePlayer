@@ -179,13 +179,16 @@ function applyUiScale(win, scale) {
 
 // ── Window IPC ────────────────────────────────────────────────────────────
 
-// Sets the full (tall) window height once on load. h is design px, bottom-anchored.
+// Sets the full (tall) window height. h is design px. The window keeps whichever
+// edge it's docked to, so growing/shrinking (e.g. the update bar appearing) expands
+// away from that edge instead of sliding the widget off it.
 ipcMain.on('set-exact-height', (event, h) => {
   mainWinDesignMaxH = h;
   const win = BrowserWindow.fromWebContents(event.sender);
   const hDip = Math.round(h * mainUiScale);
   const { x, y, width, height } = win.getBounds();
-  win.setBounds({ x, y: y + (height - hDip), width, height: hDip });
+  const dockedTop = placedCorner === 'tl' || placedCorner === 'tr';
+  win.setBounds({ x, y: dockedTop ? y : y + (height - hDip), width, height: hDip });
 });
 
 // Renderer's hit-test toggles click-through for the transparent empty area.
@@ -546,7 +549,31 @@ function setupAutoUpdate() {
   // let them choose. Only download (and later restart) on their confirmation.
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.on('error', (err) => console.error('[updater]', err?.message || err));
+
+  // Progress is mirrored in two places: an in-app bar (visible while using the
+  // widget) and the taskbar button (visible once it's minimised).
+  const sendToMain = (channel, payload) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+  };
+  const setTaskbarProgress = (fraction) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setProgressBar(fraction);
+  };
+  const endProgress = (payload) => {
+    setTaskbarProgress(-1); // -1 clears the taskbar bar
+    sendToMain('update-progress-done', payload);
+  };
+
+  autoUpdater.on('error', (err) => {
+    console.error('[updater]', err?.message || err);
+    endProgress({ error: err?.message || String(err) });
+  });
+
+  autoUpdater.on('download-progress', (p) => {
+    sendToMain('update-progress', {
+      percent: p.percent, transferred: p.transferred, total: p.total, bytesPerSecond: p.bytesPerSecond,
+    });
+    setTaskbarProgress(clamp((p.percent || 0) / 100, 0, 1));
+  });
 
   autoUpdater.on('update-available', async (info) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -559,10 +586,18 @@ function setupAutoUpdate() {
       message: `새로운 업데이트가 있습니다 (v${info.version}).`,
       detail: '지금 다운로드하여 업데이트할까요?',
     });
-    if (response === 0) autoUpdater.downloadUpdate().catch((e) => console.error('[updater]', e?.message || e));
+    if (response !== 0) return;
+    // Show the bar immediately — the first download-progress event can take a while.
+    sendToMain('update-progress', { percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 });
+    setTaskbarProgress(0);
+    autoUpdater.downloadUpdate().catch((e) => {
+      console.error('[updater]', e?.message || e);
+      endProgress({ error: e?.message || String(e) });
+    });
   });
 
   autoUpdater.on('update-downloaded', async (info) => {
+    endProgress({ version: info.version });
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const { response } = await dialog.showMessageBox(mainWindow, {
       type: 'info',
@@ -576,7 +611,7 @@ function setupAutoUpdate() {
     if (response === 0) autoUpdater.quitAndInstall(true, true);
   });
 
-  autoUpdater.checkForUpdates().catch((err) => console.error('[updater]', err?.message || err));
+  autoUpdater.checkForUpdates()?.catch((err) => console.error('[updater]', err?.message || err));
 }
 
 app.whenReady().then(() => {

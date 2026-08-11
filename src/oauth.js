@@ -16,6 +16,8 @@ const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
 const SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000;
+// Matched by the renderer to tell an expired session apart from a transient failure.
+const AUTH_EXPIRED_MSG = 'Google 로그인이 만료되었습니다. 설정에서 다시 로그인하세요.';
 
 let creds = { clientId: '', clientSecret: '' };
 try { creds = { ...creds, ...require('./google-config') }; } catch {}
@@ -98,14 +100,30 @@ async function getAccessToken() {
   const d = load();
   if (!d.refresh_token) throw new Error('Google 로그인이 필요합니다');
   if (d.access_token && d.expiry && Date.now() < d.expiry) return d.access_token;
-  const t = await postToken({
-    client_id: creds.clientId, client_secret: creds.clientSecret,
-    refresh_token: d.refresh_token, grant_type: 'refresh_token',
-  });
+  let t;
+  try {
+    t = await postToken({
+      client_id: creds.clientId, client_secret: creds.clientSecret,
+      refresh_token: d.refresh_token, grant_type: 'refresh_token',
+    });
+  } catch (err) {
+    // invalid_grant means the refresh token is revoked or expired — Google expires
+    // them after 7 days while the OAuth consent screen is still in "Testing". It can
+    // never recover, so drop it and ask for a fresh sign-in instead of failing on
+    // every single request with a generic error.
+    if (/invalid_grant/.test(String(err?.message))) {
+      signOut();
+      throw new Error(AUTH_EXPIRED_MSG);
+    }
+    throw err;
+  }
   d.access_token = t.access_token;
   d.expiry = Date.now() + (t.expires_in - 60) * 1000;
   save(d);
   return d.access_token;
 }
 
-module.exports = { init, signIn, signOut, isConfigured, isSignedIn, getAccount, setAccount, getAccessToken };
+module.exports = {
+  init, signIn, signOut, isConfigured, isSignedIn, getAccount, setAccount, getAccessToken,
+  AUTH_EXPIRED_MSG,
+};

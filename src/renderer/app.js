@@ -822,21 +822,54 @@ async function refreshPlaylist(pl) {
   return result;
 }
 
-async function refreshAllPlaylists() {
-  const targets = state.playlists.filter(p => p.source === 'google' ? p.loaded : !!p.ytId);
-  if (!targets.length) return;
+const canRefresh = (pl) => (pl.source === 'google' ? !!pl.loaded : !!pl.ytId);
 
-  let added = 0, removed = 0, changed = 0;
-  for (const pl of targets) {
-    try {
-      const r = await refreshPlaylist(pl);
-      if (r && (r.added || r.removed)) { added += r.added; removed += r.removed; changed++; }
-    } catch { /* one bad playlist shouldn't stop the rest */ }
+// `verbose` (manual run) always reports the outcome; the launch run stays quiet
+// unless something actually changed, so startup isn't noisy.
+let refreshing = false;
+
+async function refreshAllPlaylists({ verbose = false } = {}) {
+  if (refreshing) return;
+  const targets = state.playlists.filter(canRefresh);
+  if (!targets.length) {
+    if (verbose) {
+      showToast(state.playlists.length
+        ? '갱신할 수 있는 재생목록이 없습니다 — 원본 링크가 없는 목록은 URL로 다시 추가해야 합니다.'
+        : '재생목록이 없습니다.', 'error');
+    }
+    return;
   }
-  await ipcRenderer.invoke('save-playlists', state.playlists);
-  if (!changed) return;
+
+  refreshing = true;
+  if (verbose) showToast(`재생목록 ${targets.length}개 갱신 중…`);
+  let added = 0, removed = 0, changed = 0, failed = 0, authExpired = false;
+  try {
+    for (const pl of targets) {
+      try {
+        const r = await refreshPlaylist(pl);
+        if (r && (r.added || r.removed)) { added += r.added; removed += r.removed; changed++; }
+      } catch (err) {
+        const msg = String(err?.message || err);
+        console.error('[refresh]', pl.name, msg);
+        // An expired Google session fails every remaining playlist the same way —
+        // stop and say so once instead of grinding through them all.
+        if (/로그인이 만료|로그인이 필요/.test(msg)) { authExpired = true; break; }
+        failed++;
+      }
+    }
+    await ipcRenderer.invoke('save-playlists', state.playlists);
+  } finally {
+    refreshing = false;
+  }
+
   ipcRenderer.send('push-playlist-state', { playlists: state.playlists, activePlaylistId: state.activePlaylistId });
-  showToast(`재생목록 ${changed}개 갱신됨 (추가 ${added} / 삭제 ${removed})`, 'success');
+  if (changed) {
+    showToast(`재생목록 ${changed}개 갱신됨 (추가 ${added} / 삭제 ${removed})`, 'success');
+  } else if (verbose && !authExpired) {
+    showToast(`재생목록 ${targets.length}개 확인 — 변경 없음`, 'success');
+  }
+  if (authExpired) showToast('Google 로그인이 만료되어 갱신할 수 없습니다 — 설정에서 다시 로그인하세요.', 'error');
+  else if (failed) showToast(`${failed}개는 갱신하지 못했습니다 (비공개이거나 네트워크 오류)`, 'error');
 }
 
 // ── Playlist panel ────────────────────────────────────────────────────────
@@ -845,6 +878,17 @@ async function refreshAllPlaylists() {
 const collapsedHeight = () =>
   el('playlist-panel-header').getBoundingClientRect().height
   + el('player-bar').getBoundingClientRect().height;
+
+// The OS window is fixed at the full (expanded) height, so anything that changes the
+// visible UI's height — the update bar appearing/disappearing — must resize it.
+function syncWindowHeight() {
+  requestAnimationFrame(() => {
+    const bar = el('update-progress');
+    const extra = bar.classList.contains('hidden') ? 0 : bar.getBoundingClientRect().height;
+    // 280 = CSS #queue-list open max-height
+    ipcRenderer.send('set-exact-height', Math.round(collapsedHeight() + extra + 280));
+  });
+}
 
 // The OS window stays a fixed tall size; the playlist slides open/closed purely via
 // CSS (#queue-list max-height transition) within it — no window resize, no setShape.
@@ -855,6 +899,34 @@ function togglePlaylistPanel() {
   panel.classList.toggle('open', !isOpen);
   chevron?.setAttribute('points', isOpen ? '18 15 12 9 6 15' : '6 9 12 15 18 9');
   updateClickThrough(); // visible UI area changed
+}
+
+// ── Update download progress ───────────────────────────────────────────────
+// The updater downloads ~120 MB with no feedback otherwise, so mirror its
+// progress in a bar above the player bar (the taskbar button shows it too).
+
+const toMB = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
+
+function showUpdateProgress({ percent = 0, transferred = 0, total = 0, bytesPerSecond = 0 }) {
+  const box = el('update-progress');
+  const wasHidden = box.classList.contains('hidden');
+  box.classList.remove('hidden');
+
+  const pct = Math.min(100, Math.max(0, percent));
+  el('update-progress-fill').style.width = pct + '%';
+  el('update-progress-label').textContent = `업데이트 다운로드 중 ${Math.round(pct)}%`;
+  el('update-progress-meta').textContent = total
+    ? `${toMB(transferred)} / ${toMB(total)} MB${bytesPerSecond ? ` · ${toMB(bytesPerSecond)} MB/s` : ''}`
+    : '준비 중…';
+
+  if (wasHidden) syncWindowHeight(); // the bar adds height to the visible UI
+}
+
+function hideUpdateProgress({ error, version } = {}) {
+  el('update-progress').classList.add('hidden');
+  syncWindowHeight();
+  if (error) showToast(`업데이트 다운로드 실패 — ${truncate(String(error), 60)}`, 'error');
+  else if (version) showToast(`업데이트 다운로드 완료 (v${version})`, 'success');
 }
 
 // ── Click-through for the transparent empty area ────────────────────────────
@@ -1169,6 +1241,9 @@ function initControls() {
 }
 
 function initIPCHandlers() {
+  ipcRenderer.on('update-progress', (_, p) => showUpdateProgress(p));
+  ipcRenderer.on('update-progress-done', (_, r) => hideUpdateProgress(r));
+
   ipcRenderer.on('send-menu-state', () =>
     ipcRenderer.send('push-menu-state', { apiKey: state.apiKey }));
 
@@ -1261,6 +1336,7 @@ function initIPCHandlers() {
       case 'switch-to-queue':  switchToQueue(); break;
       case 'delete-playlist':  deletePlaylist(action.id); break;
       case 'open-add-playlist': openAddPlaylistModal(); break;
+      case 'refresh-playlists': refreshAllPlaylists({ verbose: true }); break;
     }
     ipcRenderer.send('push-playlist-state', { playlists: state.playlists, activePlaylistId: state.activePlaylistId });
   });
@@ -1358,11 +1434,7 @@ async function init() {
 
   window.addEventListener('beforeunload', saveLastPlayback);
 
-  requestAnimationFrame(() => {
-    // Window is fixed at the full (expanded) height; the playlist slides within it.
-    const maxH = collapsedHeight() + 280; // 280 = CSS #queue-list open max-height
-    ipcRenderer.send('set-exact-height', maxH);
-  });
+  syncWindowHeight();
 
   // Restore first so the refresh can re-anchor on the track that's actually loaded.
   if (saved.lastPlayback?.currentIndex >= 0) {
