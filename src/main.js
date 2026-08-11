@@ -132,7 +132,16 @@ ipcMain.on('popup-search-request', (_, query) => {
 
 ipcMain.on('popup-search-response', (_, data) => {
   if (!popups.menu.win || popups.menu.win.isDestroyed()) return;
-  popups.menu.win.webContents.send(data.error ? 'search-error' : 'search-results', data.results);
+  popups.menu.win.webContents.send(data.error ? 'search-error' : 'search-results', data);
+});
+
+ipcMain.on('popup-playlist-items-request', (_, playlistId) => {
+  mainWindow?.webContents.send('popup-playlist-items-request', playlistId);
+});
+
+ipcMain.on('popup-playlist-items-response', (_, data) => {
+  if (!popups.menu.win || popups.menu.win.isDestroyed()) return;
+  popups.menu.win.webContents.send(data.error ? 'playlist-items-error' : 'playlist-items', data);
 });
 
 ipcMain.on('settings-saved', (_, data) => {
@@ -371,17 +380,30 @@ function sanitizeFolderName(name) {
 let localAudioIndex = null;
 let localAudioIndexDir = null;
 
+// Downloads ask for m4a but fall back to whatever `bestaudio` yields (webm/opus/…),
+// so the index must recognise every container yt-dlp can leave behind — otherwise a
+// perfectly good file looks missing and the track gets downloaded again and again.
+const AUDIO_FILE_RE = /\[([\w-]{11})\]\.(m4a|mp4|webm|weba|opus|ogg|oga|mp3|aac|flac|mka|wav)$/i;
+const AUDIO_SCAN_DEPTH = 3;
+
 function buildLocalAudioIndex() {
   const root = getMusicDir();
   const index = new Map();
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const sub = path.join(root, entry.name);
-    for (const name of fs.readdirSync(sub)) {
-      const m = name.match(/\[([\w-]{11})\]\.m4a$/);
-      if (m) index.set(m[1], path.join(sub, name));
+  // Files normally live one level down (one folder per playlist), but the user may
+  // have reorganised them — walk a few levels so moved files stay recognised.
+  const walk = (dir, depth) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (depth > 0) walk(path.join(dir, entry.name), depth - 1);
+        continue;
+      }
+      const m = entry.name.match(AUDIO_FILE_RE);
+      if (m && !index.has(m[1])) index.set(m[1], path.join(dir, entry.name));
     }
-  }
+  };
+  walk(root, AUDIO_SCAN_DEPTH);
   localAudioIndex = index;
   localAudioIndexDir = root;
   return index;
@@ -400,6 +422,10 @@ function findLocalAudioFile(videoId) {
 }
 
 ipcMain.handle('download-track', async (_, videoId, playlistName) => {
+  // The renderer also guards on its cached id set, but that cache can be stale —
+  // the on-disk index is the authority, so never spawn yt-dlp for a file we have.
+  const existing = findLocalAudioFile(videoId);
+  if (existing) return { dir: path.dirname(existing), skipped: true };
   const root = getMusicDir();
   const sub = path.join(root, sanitizeFolderName(playlistName));
   if (!fs.existsSync(sub)) fs.mkdirSync(sub, { recursive: true });
@@ -418,6 +444,42 @@ ipcMain.handle('download-track', async (_, videoId, playlistName) => {
 ipcMain.handle('list-downloaded-ids', () => [...getLocalAudioIndex().keys()]);
 
 ipcMain.handle('get-local-audio-path', (_, videoId) => findLocalAudioFile(videoId));
+
+// A music folder inside OneDrive is a trap: with Files On-Demand the downloaded
+// tracks become cloud-only placeholders, so every playback makes OneDrive re-fetch
+// the file and pop a Windows "downloading" notification — even though the app never
+// re-downloads anything. Detect it so the renderer can warn once.
+function cloudSyncRootOf(dir) {
+  const norm = (p) => path.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+  const target = norm(dir);
+  for (const root of [process.env.OneDrive, process.env.OneDriveConsumer, process.env.OneDriveCommercial]) {
+    if (!root) continue;
+    const r = norm(root);
+    if (target === r || target.startsWith(r + path.sep)) return root;
+  }
+  return /(^|[\\/])onedrive([\s-][^\\/]*)?([\\/]|$)/i.test(dir) ? 'OneDrive' : null;
+}
+
+// Being inside OneDrive is only a problem while the files are actually dehydrated —
+// "always keep on this device" makes it a non-issue. A placeholder still reports its
+// logical size but has no blocks allocated, so sampling a few files tells them apart.
+function hasDehydratedFiles(limit = 20) {
+  let checked = 0;
+  for (const file of getLocalAudioIndex().values()) {
+    if (checked++ >= limit) break;
+    try {
+      const st = fs.statSync(file);
+      if (st.size > 0 && st.blocks === 0) return true;
+    } catch {}
+  }
+  return false;
+}
+
+ipcMain.handle('music-dir-info', () => {
+  const dir = getMusicDir();
+  const cloudRoot = cloudSyncRootOf(dir);
+  return { dir, cloudSync: cloudRoot && hasDehydratedFiles() ? cloudRoot : null };
+});
 
 ipcMain.handle('choose-music-dir', async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);

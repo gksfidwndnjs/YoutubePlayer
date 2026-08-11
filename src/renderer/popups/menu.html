@@ -22,7 +22,92 @@
     }
     .popup-section-hdr .label-hint { font-size: 9px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-muted); }
     .popup-section-body { padding: 10px 14px; }
-    #search-results { max-height: 260px; overflow-y: auto; margin-top: 4px; }
+
+    /* ── Search results as a CRT screen ── */
+    #search-screen {
+      position: relative;
+      margin-top: 10px;
+      min-height: 120px;
+      border-radius: 8px;
+      background: var(--crt-bg-gradient);
+      border: var(--crt-border);
+      border-top-color: var(--crt-border-top);
+      box-shadow: var(--crt-shadow);
+      overflow: hidden;
+    }
+    #search-screen::before { /* scanlines */
+      content: ''; position: absolute; inset: 0; z-index: 2;
+      background: var(--crt-scanline);
+      pointer-events: none; border-radius: inherit;
+    }
+    #search-screen::after { /* vignette */
+      content: ''; position: absolute; inset: 0; z-index: 3;
+      background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.45) 100%);
+      pointer-events: none; border-radius: inherit;
+    }
+    #search-results {
+      position: relative; z-index: 1;
+      max-height: 260px; overflow-y: auto;
+      padding: 6px;
+    }
+    .crt-msg {
+      padding: 18px 12px; text-align: center;
+      font-size: 10px; line-height: 1.5; color: rgba(0,232,87,0.5);
+      text-shadow: 0 0 6px rgba(0,232,87,0.3);
+    }
+    /* Section / back-nav bar inside the screen */
+    .crt-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 6px 4px;
+      font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+      color: rgba(0,232,87,0.7); text-shadow: 0 0 6px rgba(0,232,87,0.4);
+    }
+    .crt-bar + .res-card { margin-top: 2px; }
+    .crt-bar-title {
+      flex: 1; min-width: 0; font-weight: 400; text-transform: none; letter-spacing: 0;
+      color: rgba(0,232,87,0.6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .crt-back-btn {
+      flex-shrink: 0; cursor: pointer;
+      background: transparent; border: 1px solid rgba(0,232,87,0.3); color: var(--crt-green);
+      border-radius: 4px; padding: 3px 7px; font-size: 9px; font-weight: 700;
+      text-shadow: 0 0 6px rgba(0,232,87,0.4);
+    }
+    .crt-back-btn:hover { background: rgba(0,232,87,0.12); }
+    /* Result cards (videos + playlists) */
+    .res-card {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px; border-radius: 5px; cursor: pointer;
+      border: 1px solid transparent;
+    }
+    .res-card + .res-card { margin-top: 2px; }
+    .res-card:hover { background: rgba(0,232,87,0.08); border-color: rgba(0,232,87,0.25); }
+    .res-thumb {
+      width: 54px; height: 40px; object-fit: cover; border-radius: 3px; flex-shrink: 0;
+      background: #0c120e; border: 1px solid rgba(0,232,87,0.2);
+    }
+    .res-info { flex: 1; min-width: 0; }
+    .res-title {
+      font-size: 10px; font-weight: 700; color: var(--crt-green);
+      text-shadow: 0 0 6px rgba(0,232,87,0.5);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .res-badge {
+      display: inline-block; margin-left: 6px; padding: 0 4px; vertical-align: middle;
+      font-size: 8px; font-weight: 700; border-radius: 3px;
+      background: rgba(0,232,87,0.15); color: var(--crt-green); border: 1px solid rgba(0,232,87,0.35);
+      text-shadow: none;
+    }
+    .res-channel {
+      font-size: 9px; color: rgba(0,232,87,0.55); margin-top: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .res-btns { display: flex; gap: 4px; flex-shrink: 0; }
+    .res-btns .btn-icon {
+      color: var(--crt-green);
+      background: transparent; border: 1px solid rgba(0,232,87,0.3);
+    }
+    .res-btns .btn-icon:hover { background: rgba(0,232,87,0.12); }
     input[type="text"] {
       background-image:
         repeating-linear-gradient(0deg, transparent 0px, transparent 3px, rgba(0,0,0,0.13) 3px, rgba(0,0,0,0.13) 4px),
@@ -55,12 +140,12 @@
   </div>
 
   <div class="popup-section-hdr">
-    Search
+    Search playlists
     <span class="label-hint">(API key required)</span>
   </div>
   <div class="popup-section-body">
     <div class="input-row">
-      <input id="search-input" type="text" placeholder="Search YouTube…" spellcheck="false">
+      <input id="search-input" type="text" placeholder="재생목록 / 앨범 검색…" spellcheck="false">
       <button id="search-btn" class="btn-icon btn-3d">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="6"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </button>
@@ -68,7 +153,11 @@
     <div id="search-no-key" class="info-banner hidden">
       <span>Set an API key in Settings.</span>
     </div>
-    <div id="search-results"></div>
+    <div id="search-screen">
+      <div id="search-results">
+        <div class="crt-msg">▌ 재생목록을 검색하세요</div>
+      </div>
+    </div>
   </div>
 
   <div id="menu-version">v—</div>

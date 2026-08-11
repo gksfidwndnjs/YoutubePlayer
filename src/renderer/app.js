@@ -150,6 +150,23 @@ function extractPlaylistId(raw) {
   return m ? m[1] : null;
 }
 
+// Score a video search hit by how likely it is to be an official release, so we
+// can surface "official audio" at the top of search results. Auto-generated
+// "- Topic" channels and VEVO host the label's official audio; live/cover/remix
+// uploads get penalised.
+function officialScore(v) {
+  const ch = (v.channel || '').toLowerCase();
+  const t = (v.title || '').toLowerCase();
+  let s = 0;
+  if (/-\s*topic$/.test(ch)) s += 100;
+  if (/vevo/.test(ch)) s += 60;
+  if (/official/.test(ch)) s += 25;
+  if (/official\s*(audio|music\s*video|video|mv|lyric)/.test(t)) s += 50;
+  if (/공식/.test(t)) s += 30;
+  if (/\b(cover|remix|live|lyrics?|reaction|sped\s*up|nightcore|8d|mashup|karaoke|instrumental)\b/.test(t)) s -= 40;
+  return s;
+}
+
 function extractVideoId(raw) {
   const s = raw.trim();
   for (const re of [
@@ -678,7 +695,8 @@ async function addPlaylistToQueue(playlistId) {
   try {
     const { title, tracks } = await ipcRenderer.invoke('get-playlist-info', playlistId);
     if (!tracks.length) { showToast('Playlist is empty or unavailable', 'error'); return; }
-    const newPl = { id: Date.now().toString(), name: title, tracks };
+    // ytId keeps the link to the source playlist so it can be refreshed later.
+    const newPl = { id: Date.now().toString(), name: title, ytId: playlistId, tracks, lastRefresh: Date.now() };
     state.playlists.push(newPl);
     await ipcRenderer.invoke('save-playlists', state.playlists);
     switchToPlaylist(newPl.id);
@@ -757,6 +775,68 @@ function deletePlaylist(id) {
   ipcRenderer.invoke('save-playlists', state.playlists);
   if (state.activePlaylistId === id) switchToQueue();
   else renderQueue();
+}
+
+// ── Playlist auto-refresh ─────────────────────────────────────────────────
+// Imported playlists go stale as the source changes upstream. On launch every
+// linked playlist is re-fetched and reconciled: tracks deleted upstream are
+// dropped, new ones appended. Local ordering and manual additions are preserved,
+// so a refresh never scrambles a list the user has arranged.
+
+// null → this playlist has no link to a source we can re-fetch (added before ytId
+// was recorded, or a Google list whose tracks haven't been loaded yet).
+async function fetchRemoteTracks(pl) {
+  if (pl.source === 'google') return pl.loaded ? ipcRenderer.invoke('google-playlist-items', pl.id) : null;
+  if (!pl.ytId) return null;
+  const { tracks } = await ipcRenderer.invoke('get-playlist-info', pl.ytId);
+  return tracks;
+}
+
+function reconcileTracks(local, remote) {
+  const remoteById = new Map(remote.map(t => [t.videoId, t]));
+  const localIds = new Set(local.map(t => t.videoId));
+  // Keep local order, refresh titles/channels from upstream (videos get renamed).
+  const kept = local.filter(t => remoteById.has(t.videoId)).map(t => ({ ...t, ...remoteById.get(t.videoId) }));
+  const added = remote.filter(t => !localIds.has(t.videoId));
+  return { tracks: [...kept, ...added], added: added.length, removed: local.length - kept.length };
+}
+
+// Returns { added, removed }, or null when there was nothing to refresh against.
+async function refreshPlaylist(pl) {
+  const remote = await fetchRemoteTracks(pl);
+  // An empty result is more likely a hiccup (private/unavailable/quota) than a
+  // genuinely emptied playlist — never wipe the user's tracks on that.
+  if (!Array.isArray(remote) || !remote.length) return null;
+
+  const result = reconcileTracks(pl.tracks || [], remote);
+  pl.tracks = result.tracks;
+  pl.lastRefresh = Date.now();
+
+  if (pl.id === state.activePlaylistId) {
+    const currentId = state.currentVideo?.videoId;
+    state.queue = [...result.tracks];
+    // The playing track may have shifted (or vanished) — re-anchor by video id.
+    state.currentIndex = currentId ? state.queue.findIndex(v => v.videoId === currentId) : -1;
+    renderQueue();
+  }
+  return result;
+}
+
+async function refreshAllPlaylists() {
+  const targets = state.playlists.filter(p => p.source === 'google' ? p.loaded : !!p.ytId);
+  if (!targets.length) return;
+
+  let added = 0, removed = 0, changed = 0;
+  for (const pl of targets) {
+    try {
+      const r = await refreshPlaylist(pl);
+      if (r && (r.added || r.removed)) { added += r.added; removed += r.removed; changed++; }
+    } catch { /* one bad playlist shouldn't stop the rest */ }
+  }
+  await ipcRenderer.invoke('save-playlists', state.playlists);
+  if (!changed) return;
+  ipcRenderer.send('push-playlist-state', { playlists: state.playlists, activePlaylistId: state.activePlaylistId });
+  showToast(`재생목록 ${changed}개 갱신됨 (추가 ${added} / 삭제 ${removed})`, 'success');
 }
 
 // ── Playlist panel ────────────────────────────────────────────────────────
@@ -877,7 +957,7 @@ async function fetchPlaylistForAdd() {
   btn.disabled = true; btn.textContent = 'Fetching…';
   try {
     const { title, tracks } = await ipcRenderer.invoke('get-playlist-info', playlistId);
-    pendingPlaylist = { name: title, tracks };
+    pendingPlaylist = { name: title, tracks, ytId: playlistId };
     el('add-playlist-name').value = title;
     el('add-playlist-info').textContent = `${tracks.length} tracks fetched`;
     el('add-playlist-preview').classList.remove('hidden');
@@ -893,7 +973,10 @@ async function fetchPlaylistForAdd() {
 function saveNewPlaylist() {
   if (!pendingPlaylist) return;
   const name = el('add-playlist-name').value.trim() || pendingPlaylist.name;
-  const newPl = { id: Date.now().toString(), name, tracks: pendingPlaylist.tracks };
+  const newPl = {
+    id: Date.now().toString(), name,
+    ytId: pendingPlaylist.ytId, tracks: pendingPlaylist.tracks, lastRefresh: Date.now(),
+  };
   state.playlists.push(newPl);
   ipcRenderer.invoke('save-playlists', state.playlists);
   closeAddPlaylistModal();
@@ -1125,15 +1208,49 @@ function initIPCHandlers() {
   });
 
   ipcRenderer.on('popup-search-request', async (_, query) => {
-    if (!state.apiKey) { ipcRenderer.send('popup-search-response', { results: [], error: true }); return; }
+    if (!state.apiKey) { ipcRenderer.send('popup-search-response', { error: true }); return; }
     try {
-      const res = await fetch(`${YT_SEARCH_API}?part=snippet&q=${encodeURIComponent(query)}&type=video&maxResults=${SEARCH_MAX_RESULTS}&key=${encodeURIComponent(state.apiKey)}`);
-      const data = await res.json();
-      if (data.error || !data.items?.length) { ipcRenderer.send('popup-search-response', { results: [] }); return; }
-      ipcRenderer.send('popup-search-response', {
-        results: data.items.map(i => ({ videoId: i.id.videoId, title: i.snippet.title, channel: i.snippet.channelTitle })),
+      const key = encodeURIComponent(state.apiKey);
+      const q = encodeURIComponent(query);
+      const thumbOf = s => s?.thumbnails?.medium?.url || s?.thumbnails?.default?.url || '';
+      const [plData, vidData] = await Promise.all([
+        fetch(`${YT_SEARCH_API}?part=snippet&q=${q}&type=playlist&maxResults=${SEARCH_MAX_RESULTS}&key=${key}`).then(r => r.json()).catch(() => ({})),
+        fetch(`${YT_SEARCH_API}?part=snippet&q=${q}&type=video&maxResults=10&key=${key}`).then(r => r.json()).catch(() => ({})),
+      ]);
+      if (plData.error && vidData.error) { ipcRenderer.send('popup-search-response', { error: true }); return; }
+
+      const playlists = (plData.items || []).map(i => ({
+        playlistId: i.id.playlistId,
+        title: i.snippet.title,
+        channel: i.snippet.channelTitle,
+        thumb: thumbOf(i.snippet),
+      }));
+
+      const videos = (vidData.items || []).map(i => ({
+        videoId: i.id.videoId,
+        title: i.snippet.title,
+        channel: i.snippet.channelTitle,
+        thumb: thumbOf(i.snippet),
+      }));
+      const official = videos
+        .map(v => ({ v, s: officialScore(v) }))
+        .filter(x => x.s > 0)
+        .sort((a, b) => b.s - a.s)
+        .slice(0, 3)
+        .map(x => x.v);
+
+      ipcRenderer.send('popup-search-response', { official, playlists });
+    } catch { ipcRenderer.send('popup-search-response', { error: true }); }
+  });
+
+  ipcRenderer.on('popup-playlist-items-request', async (_, playlistId) => {
+    try {
+      const { title, tracks } = await ipcRenderer.invoke('get-playlist-info', playlistId);
+      ipcRenderer.send('popup-playlist-items-response', {
+        playlistId, title,
+        items: tracks.map(t => ({ videoId: t.videoId, title: t.title, channel: t.channel })),
       });
-    } catch { ipcRenderer.send('popup-search-response', { results: [], error: true }); }
+    } catch { ipcRenderer.send('popup-playlist-items-response', { error: true }); }
   });
 
   ipcRenderer.on('popup-action', (_, action) => {
@@ -1186,6 +1303,21 @@ function maybeShowFirstRunSetup(saved) {
   };
 }
 
+// With OneDrive's Files On-Demand, downloaded tracks can be turned into cloud-only
+// placeholders: the app still sees the file (so the ✓ stays) but every playback makes
+// OneDrive fetch it back, which Windows announces as a download. Warn once — the main
+// process only reports this while files are genuinely dehydrated.
+async function warnIfCloudSyncedMusicDir() {
+  if (state.settings.cloudDirWarned) return;
+  try {
+    const { cloudSync } = await ipcRenderer.invoke('music-dir-info');
+    if (!cloudSync) return;
+    state.settings.cloudDirWarned = true;
+    await ipcRenderer.invoke('save-settings', state.settings);
+    showToast('음악 폴더가 OneDrive의 클라우드 전용 파일입니다. 재생할 때마다 OneDrive가 내려받아 알림이 뜹니다 — 폴더를 "이 장치에 항상 유지"로 설정하거나 OneDrive 밖으로 옮기세요.', 'error');
+  } catch {}
+}
+
 async function init() {
   const [saved, savedPlaylists] = await Promise.all([
     ipcRenderer.invoke('get-settings'),
@@ -1226,15 +1358,18 @@ async function init() {
 
   window.addEventListener('beforeunload', saveLastPlayback);
 
-  if (saved.lastPlayback?.currentIndex >= 0) {
-    restorePlayback(saved.lastPlayback);
-  }
-
   requestAnimationFrame(() => {
     // Window is fixed at the full (expanded) height; the playlist slides within it.
     const maxH = collapsedHeight() + 280; // 280 = CSS #queue-list open max-height
     ipcRenderer.send('set-exact-height', maxH);
   });
+
+  // Restore first so the refresh can re-anchor on the track that's actually loaded.
+  if (saved.lastPlayback?.currentIndex >= 0) {
+    await restorePlayback(saved.lastPlayback).catch(() => {});
+  }
+  warnIfCloudSyncedMusicDir();
+  refreshAllPlaylists();
 }
 
 document.addEventListener('DOMContentLoaded', init);
