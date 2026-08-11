@@ -22,6 +22,10 @@ const DESIGN_WIDTH = 384;       // = legacy 1920/5, so 1080p looks pixel-identic
 const REFERENCE_HEIGHT = 1080;  // workArea height that maps to uiScale = 1.0
 const SCALE_MIN = 0.75;
 const SCALE_MAX = 1.6;
+const DOWNLOAD_ATTEMPTS = 3;
+const DOWNLOAD_RETRY_DELAY_MS = 2500;
+// Failures no retry can fix — the video itself is gone or barred to us.
+const PERMANENT_ERROR_RE = /video unavailable|private video|removed by the uploader|has been terminated|members[- ]only|sign in to confirm your age|not available in your country|copyright/i;
 const DEFAULT_DOWNLOAD_DIR_NAME = 'YTmusic';
 const DEFAULT_PLAYLIST_FOLDER = 'Queue';
 const YT_WATCH_URL = (id) => `https://www.youtube.com/watch?v=${id}`;
@@ -40,7 +44,12 @@ let ffmpegPath;
 // straight to CreateProcess, no shell, no splitting.
 const YT_DLP_MAX_BUFFER = 64 * 1024 * 1024; // playlist dumps get large
 
-function youtubeDl(url, flags = {}) {
+// yt-dlp is self-updated on launch (YouTube breaks old builds every few months).
+// Every call waits on it so nothing ever spawns the binary mid-replacement.
+let ytDlpReady = Promise.resolve();
+
+async function youtubeDl(url, flags = {}) {
+  await ytDlpReady;
   return new Promise((resolve, reject) => {
     execFile(
       ytDlpPath,
@@ -51,6 +60,24 @@ function youtubeDl(url, flags = {}) {
         else resolve(stdout);
       },
     );
+  });
+}
+
+const YT_DLP_UPDATE_TIMEOUT_MS = 3 * 60 * 1000;
+
+// `-U` replaces the binary in place. It lives under %LOCALAPPDATA% in the installed
+// app, so this needs no elevation. Failures are never fatal — a stale yt-dlp still
+// works for most videos, and the network may simply be down.
+function updateYtDlp() {
+  return new Promise((resolve) => {
+    execFile(ytDlpPath, ['-U'], { windowsHide: true, timeout: YT_DLP_UPDATE_TIMEOUT_MS }, (err, stdout, stderr) => {
+      const out = `${stdout || ''}${stderr || ''}`.trim();
+      if (err) { console.error('[yt-dlp update]', out || err.message); resolve(null); return; }
+      console.log('[yt-dlp update]', out.split(/\r?\n/).pop());
+      // Only report an actual upgrade; "is up to date" is noise.
+      const m = out.match(/Updated yt-dlp to (?:stable@)?([\d.]+)/);
+      resolve(m ? m[1] : null);
+    });
   });
 }
 
@@ -179,6 +206,7 @@ ipcMain.on('popup-action', (_, action) => mainWindow?.webContents.send('popup-ac
 // ── UI scale ────────────────────────────────────────────────────────────────
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Logical scale derived from the display's height (stable across aspect ratios).
 function computeUiScale(display) {
@@ -485,18 +513,31 @@ ipcMain.handle('download-track', async (_, videoId, playlistName) => {
   const root = getMusicDir();
   const sub = path.join(root, sanitizeFolderName(playlistName));
   if (!fs.existsSync(sub)) fs.mkdirSync(sub, { recursive: true });
-  try {
-    await youtubeDl(YT_WATCH_URL(videoId), {
-      format: 'bestaudio[ext=m4a]/bestaudio',
-      output: path.join(sub, '%(title)s [%(id)s].%(ext)s'),
-      embedThumbnail: true,
-      ffmpegLocation: ffmpegPath,
-      noPlaylist: true,
-      noWarnings: true,
-    });
-  } catch (err) {
-    const reason = ytDlpErrorReason(err);
-    logDownloadFailure(videoId, reason, err);
+  // Batch runs hammer YouTube and earn a temporary 403; a short pause clears it.
+  // Anything permanent (deleted, private, blocked) is hopeless — fail it immediately
+  // rather than spending three attempts and more rate limit on it.
+  let lastErr = null;
+  for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
+    try {
+      await youtubeDl(YT_WATCH_URL(videoId), {
+        format: 'bestaudio[ext=m4a]/bestaudio',
+        output: path.join(sub, '%(title)s [%(id)s].%(ext)s'),
+        embedThumbnail: true,
+        ffmpegLocation: ffmpegPath,
+        noPlaylist: true,
+        noWarnings: true,
+      });
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === DOWNLOAD_ATTEMPTS || PERMANENT_ERROR_RE.test(ytDlpErrorReason(err))) break;
+      await delay(DOWNLOAD_RETRY_DELAY_MS * attempt); // 2.5s, then 5s
+    }
+  }
+  if (lastErr) {
+    const reason = ytDlpErrorReason(lastErr);
+    logDownloadFailure(videoId, reason, lastErr);
     throw new Error(reason);
   }
   invalidateLocalAudioIndex();
@@ -780,6 +821,12 @@ app.whenReady().then(() => {
   ytDlpPath = app.isPackaged
     ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'youtube-dl-exec', 'bin', binName)
     : path.join(__dirname, '../node_modules/youtube-dl-exec/bin', binName);
+
+  // Refresh yt-dlp on every launch: YouTube changes break older builds, and a stale
+  // binary is the usual reason downloads start failing out of nowhere.
+  ytDlpReady = updateYtDlp().then((version) => {
+    if (version) mainWindow?.webContents.send('yt-dlp-updated', { version });
+  });
 
   const ffmpegStatic = require('ffmpeg-static');
   ffmpegPath = app.isPackaged

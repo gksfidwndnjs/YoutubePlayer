@@ -18,6 +18,7 @@ const DEFAULT_PLAYLIST_FOLDER = 'Queue';
 const TOAST_DURATION_MS = 3000;
 // Errors now carry a reason worth reading, so they linger longer than a status blip.
 const TOAST_ERROR_DURATION_MS = 9000;
+const BATCH_GAP_MS = 800; // breathing room between batch downloads
 const PLAYBACK_SAVE_INTERVAL_MS = 5000;
 const SEARCH_MAX_RESULTS = 15;
 const YT_SEARCH_API = 'https://www.googleapis.com/youtube/v3/search';
@@ -100,7 +101,10 @@ async function downloadAll() {
   refreshDownloadStates();
   showToast(`일괄 다운로드 시작 (${pending.length}곡)`, 'success');
   let ok = 0, fail = 0;
-  for (const video of pending) {
+  for (const [i, video] of pending.entries()) {
+    // Back-to-back requests across a long playlist earn a temporary 403 from
+    // YouTube. A short gap between tracks avoids provoking it in the first place.
+    if (i > 0) await new Promise(r => setTimeout(r, BATCH_GAP_MS));
     try {
       await downloadTrack(video, { silent: true });
       ok++;
@@ -1287,6 +1291,8 @@ function initIPCHandlers() {
     r?.error ? { error: `업데이트 다운로드 실패 — ${r.error}` }
              : { message: r?.version ? `업데이트 다운로드 완료 (v${r.version})` : '' }));
   ipcRenderer.on('task-progress', (_, p) => showProgress(p));
+  ipcRenderer.on('yt-dlp-updated', (_, { version }) =>
+    showToast(`다운로더 업데이트됨 (yt-dlp ${version})`, 'success'));
 
   ipcRenderer.on('send-menu-state', () =>
     ipcRenderer.send('push-menu-state', { apiKey: state.apiKey }));
