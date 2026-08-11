@@ -1,14 +1,16 @@
 const { app, BrowserWindow, ipcMain, session, screen, Menu, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { create: createYoutubeDl } = require('youtube-dl-exec');
+const { execFile } = require('child_process');
+const { args: ytDlpArgs } = require('youtube-dl-exec');
 const { autoUpdater } = require('electron-updater');
 const oauth = require('./oauth');
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
 // All popup/window dimensions below are in DESIGN px — multiplied by uiScale at use.
-const POPUP_HEIGHTS = { menu: 420, settings: 470, playlist: 280 };
+// playlist is taller than the bare list: it carries a fixed refresh + search header.
+const POPUP_HEIGHTS = { menu: 420, settings: 470, playlist: 340 };
 const POPUP_BLUR_DEBOUNCE_MS = 300;
 const AUDIO_CACHE_TTL_MS = 5 * 60 * 60 * 1000;
 const AUDIO_URL_EXPIRY_MARGIN_MS = 5 * 60 * 1000;
@@ -26,8 +28,31 @@ const YT_WATCH_URL = (id) => `https://www.youtube.com/watch?v=${id}`;
 const YT_PLAYLIST_URL = (id) => `https://www.youtube.com/playlist?list=${id}`;
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-let youtubeDl;
+let ytDlpPath;
 let ffmpegPath;
+
+// youtube-dl-exec switches to shell:true when the binary path contains a space, and
+// quotes only the binary — every argument is left bare for the shell to word-split.
+// The installed app lives in "…\Metalwave for YouTube\…", so downloads there lost the
+// tail of the output template (files ended up named "<title>", no id, no extension)
+// and the ffmpeg path shattered into "ffmpeg not found". Dev paths have no spaces, so
+// this only ever broke the packaged build. Spawn it ourselves: execFile passes argv
+// straight to CreateProcess, no shell, no splitting.
+const YT_DLP_MAX_BUFFER = 64 * 1024 * 1024; // playlist dumps get large
+
+function youtubeDl(url, flags = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      ytDlpPath,
+      [url, ...ytDlpArgs(flags)],
+      { maxBuffer: YT_DLP_MAX_BUFFER, windowsHide: true },
+      (err, stdout, stderr) => {
+        if (err) reject(Object.assign(err, { stdout, stderr }));
+        else resolve(stdout);
+      },
+    );
+  });
+}
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 // Transparent windows misbehave on Windows multi-monitor (disappear / teleport on
@@ -752,10 +777,9 @@ app.whenReady().then(() => {
   oauth.init(path.join(app.getPath('userData'), 'google-token.json'));
 
   const binName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp';
-  const ytDlpPath = app.isPackaged
+  ytDlpPath = app.isPackaged
     ? path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', 'youtube-dl-exec', 'bin', binName)
     : path.join(__dirname, '../node_modules/youtube-dl-exec/bin', binName);
-  youtubeDl = createYoutubeDl(ytDlpPath);
 
   const ffmpegStatic = require('ffmpeg-static');
   ffmpegPath = app.isPackaged

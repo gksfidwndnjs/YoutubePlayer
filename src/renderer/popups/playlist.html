@@ -54,7 +54,11 @@
       border: 1px solid rgba(0,232,87,0.2); border-radius: 3px;
       font-size: 9px; padding: 1px 5px;
     }
-    .pl-refresh-row { padding: 7px 10px 6px; border-bottom: 1px solid rgba(0,232,87,0.10); }
+    #playlist-head {
+      position: relative; z-index: 4; flex: none;
+      display: flex; flex-direction: column; gap: 6px;
+      padding: 8px 10px; border-bottom: 1px solid rgba(0,232,87,0.14);
+    }
     .pl-refresh-btn {
       width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;
       padding: 6px 8px; font-size: 10px; cursor: pointer;
@@ -63,6 +67,17 @@
     }
     .pl-refresh-btn:hover:not(:disabled) { background: rgba(0,232,87,0.16); color: #00e857; }
     .pl-refresh-btn:disabled { opacity: 0.4; cursor: default; }
+    #pl-search {
+      width: 100%; padding: 6px 8px; font: inherit; font-size: 10px;
+      color: #00e857; background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(0,232,87,0.22); border-radius: 4px; outline: none;
+    }
+    #pl-search::placeholder { color: rgba(0,232,87,0.35); }
+    #pl-search:focus { border-color: rgba(0,232,87,0.5); box-shadow: 0 0 6px rgba(0,232,87,0.18); }
+    .pl-empty {
+      padding: 16px 12px; text-align: center;
+      font-size: 10px; color: rgba(0,232,87,0.4); user-select: none;
+    }
     .pl-nolink { color: rgba(255,196,0,0.75); font-size: 10px; cursor: help; }
     .delete-pl-btn {
       color: rgba(0,232,87,0.45) !important;
@@ -74,6 +89,11 @@
 <body>
 <div id="popup-frame">
   <div id="playlist-crt">
+    <!-- Fixed header: refresh + search stay put while the list scrolls -->
+    <div id="playlist-head">
+      <button id="pl-refresh" class="pl-refresh-btn btn-3d"></button>
+      <input id="pl-search" type="text" placeholder="재생목록 검색…" spellcheck="false" autocomplete="off">
+    </div>
     <div id="playlist-list"></div>
   </div>
 </div>

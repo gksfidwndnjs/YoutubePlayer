@@ -9,44 +9,62 @@ ipcRenderer.on('playlist-state', (_, state) => render(state));
 // Mirrors app.js: a playlist can only be refreshed if we still know its source.
 const canRefresh = (pl) => (pl.source === 'google' ? !!pl.loaded : !!pl.ytId);
 
-function render({ playlists, activePlaylistId }) {
+let current = { playlists: [], activePlaylistId: null };
+let query = '';
+
+const matches = (name) => !query || String(name).toLowerCase().includes(query);
+
+function render(state) {
+  current = state;
+  renderHeader();
+  renderList();
+}
+
+function renderHeader() {
+  const btn = document.getElementById('pl-refresh');
+  const n = current.playlists.filter(canRefresh).length;
+  btn.disabled = !n;
+  btn.innerHTML = `↻ <span>${n ? `전체 갱신 (${n})` : '갱신할 목록 없음'}</span>`;
+}
+
+function renderList() {
   const list = document.getElementById('playlist-list');
   list.innerHTML = '';
 
-  const refreshable = playlists.filter(canRefresh).length;
-  const bar = document.createElement('div');
-  bar.className = 'pl-refresh-row';
-  bar.innerHTML = `<button class="pl-refresh-btn btn-3d" ${refreshable ? '' : 'disabled'}>
-    ↻ <span>${refreshable ? `전체 갱신 (${refreshable})` : '갱신할 목록 없음'}</span>
-  </button>`;
-  bar.querySelector('.pl-refresh-btn').addEventListener('click', () => {
-    ipcRenderer.send('popup-action', { type: 'refresh-playlists' });
-    window.close();
-  });
-  list.appendChild(bar);
-
-  // Queue option
-  const queueItem = makeItem('Queue', null, !activePlaylistId, 0);
-  queueItem.addEventListener('click', () => {
-    ipcRenderer.send('popup-action', { type: 'switch-to-queue' });
-    window.close();
-  });
-  list.appendChild(queueItem);
+  // Queue is a playlist like any other as far as filtering goes.
+  if (matches('queue')) {
+    const queueItem = makeItem('Queue', null, !current.activePlaylistId, 0);
+    queueItem.addEventListener('click', () => {
+      ipcRenderer.send('popup-action', { type: 'switch-to-queue' });
+      window.close();
+    });
+    list.appendChild(queueItem);
+  }
 
   // Split into local (added by URL) and Google-account playlists.
-  appendSection(list, '로컬 재생목록', playlists.filter(p => p.source !== 'google'), activePlaylistId);
-  appendSection(list, 'Google 계정', playlists.filter(p => p.source === 'google'), activePlaylistId);
+  let shown = appendSection(list, '로컬 재생목록', current.playlists.filter(p => p.source !== 'google'));
+  shown += appendSection(list, 'Google 계정', current.playlists.filter(p => p.source === 'google'));
+
+  if (!list.children.length) {
+    const empty = document.createElement('div');
+    empty.className = 'pl-empty';
+    empty.textContent = `"${query}" 와(과) 일치하는 재생목록이 없습니다`;
+    list.appendChild(empty);
+  }
+  return shown;
 }
 
-function appendSection(list, label, playlists, activePlaylistId) {
-  if (!playlists.length) return;
+function appendSection(list, label, playlists) {
+  const visible = playlists.filter(p => matches(p.name));
+  if (!visible.length) return 0;
+
   const hdr = document.createElement('div');
   hdr.className = 'pl-category';
   hdr.textContent = label;
   list.appendChild(hdr);
 
-  playlists.forEach(pl => {
-    const item = makeItem(pl.name, pl.id, activePlaylistId === pl.id, pl.tracks.length, canRefresh(pl));
+  visible.forEach(pl => {
+    const item = makeItem(pl.name, pl.id, current.activePlaylistId === pl.id, pl.tracks.length, canRefresh(pl));
     item.addEventListener('click', e => {
       if (e.target.closest('.delete-pl-btn')) return;
       ipcRenderer.send('popup-action', { type: 'switch-playlist', id: pl.id });
@@ -58,6 +76,7 @@ function appendSection(list, label, playlists, activePlaylistId) {
     });
     list.appendChild(item);
   });
+  return visible.length;
 }
 
 function makeItem(name, id, active, count, refreshable = true) {
@@ -76,3 +95,28 @@ function makeItem(name, id, active, count, refreshable = true) {
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+document.getElementById('pl-refresh').addEventListener('click', () => {
+  ipcRenderer.send('popup-action', { type: 'refresh-playlists' });
+  window.close();
+});
+
+const search = document.getElementById('pl-search');
+search.addEventListener('input', () => {
+  query = search.value.trim().toLowerCase();
+  renderList();
+});
+search.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    // First Escape clears the filter; a second one closes the popup.
+    if (query) { search.value = ''; query = ''; renderList(); }
+    else window.close();
+  }
+  // Enter opens the only remaining match — the fast path when searching.
+  if (e.key === 'Enter') {
+    const only = document.querySelectorAll('#playlist-list .pl-item');
+    if (only.length === 1) only[0].click();
+  }
+});
+// The popup exists to pick a playlist out of a long list; start ready to type.
+document.addEventListener('DOMContentLoaded', () => search.focus());
