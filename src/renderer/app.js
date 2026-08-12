@@ -44,14 +44,14 @@ const state = {
   // Lyrics (LRCLIB). mode persists across tracks; lines/plain reset per track.
   lyrics: {
     mode: 'info',      // 'info' | 'lyrics'
-    videoId: null,
+    key: null,         // trackKey of the track the lyrics belong to
     status: 'idle',    // 'idle' | 'loading' | 'synced' | 'plain' | 'none'
     lines: [],         // [{ time:Number(sec), text:String }] for synced
     activeIndex: -1,
   },
 };
 
-const lyricsCache = new Map(); // videoId -> { status, lines, plain }
+const lyricsCache = new Map(); // trackKey -> { status, lines, plain }
 
 async function refreshDownloadedIds() {
   try {
@@ -64,6 +64,8 @@ async function refreshDownloadedIds() {
 let downloadChain = Promise.resolve();
 
 function downloadTrack(video, { silent = false } = {}) {
+  // Folder tracks are already files on disk — there is nothing to fetch.
+  if (!isDownloadable(video)) return Promise.resolve();
   if (state.downloadedIds.has(video.videoId) || state.downloading.has(video.videoId)) {
     return Promise.resolve();
   }
@@ -95,7 +97,7 @@ function downloadTrack(video, { silent = false } = {}) {
 
 async function downloadAll() {
   if (state.batchActive) return;
-  const pending = state.queue.filter(v => !state.downloadedIds.has(v.videoId));
+  const pending = state.queue.filter(v => isDownloadable(v) && !state.downloadedIds.has(v.videoId));
   if (!pending.length) return;
   state.batchActive = true;
   refreshDownloadStates();
@@ -204,11 +206,34 @@ function extractVideoId(raw) {
 const thumbUrl   = (id) => `https://img.youtube.com/vi/${id}/mqdefault.jpg`;
 const hqThumbUrl = (id) => `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
 
-// Prefer a downloaded local file; fall back to a streaming URL.
-async function resolveAudioSrc(videoId) {
-  const localPath = await ipcRenderer.invoke('get-local-audio-path', videoId);
-  if (localPath) return 'file:///' + localPath.replace(/\\/g, '/');
-  return ipcRenderer.invoke('get-audio-url', videoId, state.settings.audioQuality);
+// Folder tracks have no videoId, so anything that identifies a track (cards, lyrics
+// cache, playlist reconciliation) keys off this instead.
+const trackKey = (v) => v?.videoId || v?.localPath || '';
+// pathToFileURL, not string surgery: '#' and '?' in a filename would otherwise cut
+// the URL short and the track would silently fail to load.
+const fileUrl = (p) => require('url').pathToFileURL(p).href;
+
+// Prefer a local file — the track's own file for folder playlists, a previous
+// download otherwise; fall back to a streaming URL.
+async function resolveAudioSrc(video) {
+  if (video.localPath) return fileUrl(video.localPath);
+  const localPath = await ipcRenderer.invoke('get-local-audio-path', video.videoId);
+  if (localPath) return fileUrl(localPath);
+  return ipcRenderer.invoke('get-audio-url', video.videoId, state.settings.audioQuality);
+}
+
+// Cover art for a folder track: embedded art extracted by the main process (cached on
+// disk). Resolves to null when the file carries none.
+const coverCache = new Map(); // localPath -> file URL | null
+async function localCoverUrl(localPath) {
+  if (coverCache.has(localPath)) return coverCache.get(localPath);
+  let url = null;
+  try {
+    const p = await ipcRenderer.invoke('local-cover', localPath);
+    if (p) url = fileUrl(p);
+  } catch {}
+  coverCache.set(localPath, url);
+  return url;
 }
 
 async function fetchVideoMeta(videoId) {
@@ -222,12 +247,33 @@ async function fetchVideoMeta(videoId) {
 
 // ── UI helpers ─────────────────────────────────────────────────────────────
 
-function setAlbumArt(video) {
+function showAlbumArt(src) {
   const art = el('album-art');
-  art.onerror = () => { art.src = thumbUrl(video.videoId); art.onerror = null; };
-  art.src = hqThumbUrl(video.videoId);
+  art.src = src;
   el('album-placeholder').style.display = 'none';
   art.style.display = 'block';
+}
+
+function clearAlbumArt() {
+  el('album-art').style.display = 'none';
+  el('album-art').src = '';
+  el('album-placeholder').style.display = '';
+}
+
+function setAlbumArt(video) {
+  const art = el('album-art');
+  if (video.videoId) {
+    art.onerror = () => { art.src = thumbUrl(video.videoId); art.onerror = null; };
+    showAlbumArt(hqThumbUrl(video.videoId));
+    return;
+  }
+  // Folder track: the placeholder stays until (and unless) embedded art turns up.
+  art.onerror = null;
+  clearAlbumArt();
+  if (!video.localPath) return;
+  localCoverUrl(video.localPath).then((url) => {
+    if (url && state.currentVideo === video) showAlbumArt(url);
+  });
 }
 
 function updateVideoInfo(video) {
@@ -323,7 +369,7 @@ async function fetchLyrics({ artist, title }, duration) {
 }
 
 function resetLyrics() {
-  state.lyrics.videoId = null;
+  state.lyrics.key = null;
   state.lyrics.status = 'idle';
   state.lyrics.lines = [];
   state.lyrics.activeIndex = -1;
@@ -334,13 +380,13 @@ function resetLyrics() {
 // Fetch + store lyrics for the current track. Called once duration is known.
 async function loadLyrics(video, duration) {
   if (!video) return;
-  const videoId = video.videoId;
-  state.lyrics.videoId = videoId;
+  const key = trackKey(video);
+  state.lyrics.key = key;
   state.lyrics.activeIndex = -1;
 
-  const cached = lyricsCache.get(videoId);
+  const cached = lyricsCache.get(key);
   if (cached) {
-    applyLyricsResult(videoId, cached);
+    applyLyricsResult(key, cached);
     return;
   }
 
@@ -350,7 +396,7 @@ async function loadLyrics(video, duration) {
   refreshLyricsView(); // loading: keep the toggle enabled, decide X only after
 
   const data = await fetchLyrics(parseTrackInfo(video), duration);
-  if (state.lyrics.videoId !== videoId) return; // track changed mid-fetch
+  if (state.lyrics.key !== key) return; // track changed mid-fetch
 
   let result;
   if (data && data.syncedLyrics) {
@@ -361,12 +407,12 @@ async function loadLyrics(video, duration) {
   } else {
     result = { status: 'none', lines: [], plain: '' };
   }
-  lyricsCache.set(videoId, result);
-  applyLyricsResult(videoId, result);
+  lyricsCache.set(key, result);
+  applyLyricsResult(key, result);
 }
 
-function applyLyricsResult(videoId, result) {
-  if (state.lyrics.videoId !== videoId) return;
+function applyLyricsResult(key, result) {
+  if (state.lyrics.key !== key) return;
   state.lyrics.status = result.status;
   state.lyrics.lines = result.lines || [];
   state.lyrics.plain = result.plain || '';
@@ -514,12 +560,12 @@ async function playVideo(video) {
   syncTrack(el('progress-bar'));
 
   try {
-    audio.src = await resolveAudioSrc(video.videoId);
+    audio.src = await resolveAudioSrc(video);
     await audio.play();
     state.playing = true;
     setLoading(false);
   } catch (err) {
-    showToast(`Failed: ${video.title || video.videoId} — skipping`, 'error');
+    showToast(`Failed: ${video.title || trackKey(video)} — skipping`, 'error');
     setLoading(false);
     if (state.currentIndex < state.queue.length - 1) playNext();
   }
@@ -573,6 +619,10 @@ const CHECK_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" s
 const DOWNLOAD_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>`;
 const CLOSE_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
 
+// Folder tracks are already on disk (and have nothing to fetch them from), so the
+// download button and the batch row only ever apply to YouTube tracks.
+const isDownloadable = (v) => !!v.videoId && !v.localPath;
+
 // Returns { icon, cls, title, disabled } for a track's download button.
 function downloadBtnState(videoId) {
   if (state.downloading.has(videoId)) {
@@ -594,7 +644,7 @@ function applyDownloadBtn(btn, video) {
 }
 
 function renderBatchRow() {
-  const pendingCount = state.queue.filter(v => !state.downloadedIds.has(v.videoId)).length;
+  const pendingCount = state.queue.filter(v => isDownloadable(v) && !state.downloadedIds.has(v.videoId)).length;
   const batchDisabled = state.batchActive || pendingCount === 0;
   const btn = el('queue-list')?.querySelector('.batch-dl-btn');
   if (!btn) return;
@@ -611,10 +661,10 @@ function refreshDownloadStates() {
   renderBatchRow();
   const list = el('queue-list');
   if (!list) return;
-  list.querySelectorAll('.video-card[data-vid]').forEach(card => {
-    const videoId = card.dataset.vid;
+  list.querySelectorAll('.video-card[data-key]').forEach(card => {
+    const key = card.dataset.key;
     const btn = card.querySelector('.download-btn');
-    if (btn) applyDownloadBtn(btn, state.queue.find(v => v.videoId === videoId) || { videoId });
+    if (btn) applyDownloadBtn(btn, state.queue.find(v => trackKey(v) === key) || { videoId: key });
   });
 }
 
@@ -632,24 +682,27 @@ function renderQueue() {
   }
 
   list.innerHTML = '';
-  const batchRow = document.createElement('div');
-  batchRow.className = 'queue-batch-row';
-  batchRow.innerHTML = `<button class="batch-dl-btn btn-3d"></button>`;
-  list.appendChild(batchRow);
-  renderBatchRow();
+  // A folder playlist has nothing to download — don't offer a dead batch row.
+  if (state.queue.some(isDownloadable)) {
+    const batchRow = document.createElement('div');
+    batchRow.className = 'queue-batch-row';
+    batchRow.innerHTML = `<button class="batch-dl-btn btn-3d"></button>`;
+    list.appendChild(batchRow);
+    renderBatchRow();
+  }
 
   state.queue.forEach((video, i) => {
     const card = document.createElement('div');
     card.className = 'video-card' + (i === state.currentIndex ? ' now-playing' : '');
-    card.dataset.vid = video.videoId;
+    card.dataset.key = trackKey(video);
     card.innerHTML = `
-      <img class="video-thumb" src="${escHtml(thumbUrl(video.videoId))}" alt="" loading="lazy">
+      <img class="video-thumb" ${video.videoId ? `src="${escHtml(thumbUrl(video.videoId))}"` : ''} alt="" loading="lazy">
       <div class="video-card-info">
-        <div class="video-card-title">${escHtml(video.title || video.videoId)}</div>
+        <div class="video-card-title">${escHtml(video.title || trackKey(video))}</div>
         <div class="video-card-channel">${escHtml(video.channel || '')}</div>
       </div>
       <div class="video-card-btns">
-        <button class="btn-icon btn-3d download-btn"></button>
+        ${isDownloadable(video) ? '<button class="btn-icon btn-3d download-btn"></button>' : ''}
         <button class="btn-icon btn-3d remove-btn" title="Remove">${CLOSE_SVG}</button>
       </div>`;
     card.addEventListener('click', () => playFromQueue(i));
@@ -657,7 +710,14 @@ function renderQueue() {
       e.stopPropagation();
       removeFromQueue(i);
     });
-    applyDownloadBtn(card.querySelector('.download-btn'), video);
+    const dlBtn = card.querySelector('.download-btn');
+    if (dlBtn) applyDownloadBtn(dlBtn, video);
+    // Folder tracks: fill the thumbnail in once their embedded art is extracted.
+    if (!video.videoId && video.localPath) {
+      localCoverUrl(video.localPath).then((url) => {
+        if (url) card.querySelector('.video-thumb').src = url;
+      });
+    }
     list.appendChild(card);
   });
 }
@@ -694,9 +754,7 @@ function clearQueue() {
   el('time-current').textContent = '0:00';
   el('time-duration').textContent = '0:00';
   syncTrack(el('progress-bar'));
-  el('album-art').style.display = 'none';
-  el('album-art').src = '';
-  el('album-placeholder').style.display = '';
+  clearAlbumArt();
   el('player-disc').classList.remove('spinning');
   el('video-title').textContent = 'NULL';
   el('video-channel').textContent = 'NULL';
@@ -746,8 +804,7 @@ function resetPlayer(titleText) {
   el('video-title').textContent = 'NULL';
   el('video-channel').textContent = 'NULL';
   resetLyrics();
-  el('album-art').style.display = 'none';
-  el('album-placeholder').style.display = '';
+  clearAlbumArt();
   el('player-disc').classList.remove('spinning');
   el('progress-bar').value = 0;
   el('time-current').textContent = '0:00';
@@ -777,6 +834,52 @@ async function switchToPlaylist(id) {
   }
   state.queue = [...(pl.tracks || [])];
   renderQueue();
+  // A folder changes on disk behind the app's back — rescan in the background so
+  // files added since the last launch show up as soon as the list is opened.
+  if (pl.source === 'folder') rescanFolderPlaylist(pl);
+}
+
+async function rescanFolderPlaylist(pl) {
+  try {
+    const r = await refreshPlaylist(pl);
+    if (!r || (!r.added && !r.removed)) return;
+    await ipcRenderer.invoke('save-playlists', state.playlists);
+    showToast(`폴더 갱신됨 (추가 ${r.added} / 삭제 ${r.removed})`, 'success');
+  } catch (err) {
+    showToast(`폴더를 읽지 못했습니다 — ${truncate(errorReason(err), 60)}`, 'error');
+  }
+}
+
+// Adds a folder of audio files as a playlist. Tracks play straight off disk, so this
+// works with no network, no API key and no account.
+async function addFolderPlaylist() {
+  let picked;
+  try {
+    picked = await ipcRenderer.invoke('choose-folder-playlist');
+  } catch (err) {
+    showToast(`폴더를 읽지 못했습니다 — ${truncate(errorReason(err), 80)}`, 'error');
+    return;
+  }
+  if (!picked) return; // cancelled
+  if (!picked.tracks.length) {
+    showToast('선택한 폴더에 재생할 수 있는 음악 파일이 없습니다', 'error');
+    return;
+  }
+  const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+  const existing = state.playlists.find(p => p.source === 'folder' && same(p.folderPath, picked.dir));
+  if (existing) {
+    showToast(`이미 추가된 폴더입니다 — "${truncate(existing.name, 24)}"`, 'error');
+    switchToPlaylist(existing.id);
+    return;
+  }
+  const newPl = {
+    id: Date.now().toString(), name: picked.name, source: 'folder',
+    folderPath: picked.dir, tracks: picked.tracks, lastRefresh: Date.now(),
+  };
+  state.playlists.push(newPl);
+  await ipcRenderer.invoke('save-playlists', state.playlists);
+  showToast(`폴더 "${truncate(picked.name, 24)}" 추가됨 (${picked.tracks.length}곡)`, 'success');
+  switchToPlaylist(newPl.id);
 }
 
 function switchToQueue() {
@@ -787,7 +890,12 @@ function switchToQueue() {
 }
 
 function deletePlaylist(id) {
-  if (!confirm('Delete this playlist?')) return;
+  // Removing a folder playlist only drops it from the app — say so, or it reads as
+  // "delete my music".
+  const isFolder = state.playlists.find(p => p.id === id)?.source === 'folder';
+  if (!confirm(isFolder
+    ? '이 폴더를 목록에서 제거할까요? (폴더와 파일은 삭제되지 않습니다)'
+    : 'Delete this playlist?')) return;
   state.playlists = state.playlists.filter(p => p.id !== id);
   ipcRenderer.invoke('save-playlists', state.playlists);
   if (state.activePlaylistId === id) switchToQueue();
@@ -803,6 +911,7 @@ function deletePlaylist(id) {
 // null → this playlist has no link to a source we can re-fetch (added before ytId
 // was recorded, or a Google list whose tracks haven't been loaded yet).
 async function fetchRemoteTracks(pl) {
+  if (pl.source === 'folder') return pl.folderPath ? ipcRenderer.invoke('scan-folder-playlist', pl.folderPath) : null;
   if (pl.source === 'google') return pl.loaded ? ipcRenderer.invoke('google-playlist-items', pl.id) : null;
   if (!pl.ytId) return null;
   const { tracks } = await ipcRenderer.invoke('get-playlist-info', pl.ytId);
@@ -810,36 +919,56 @@ async function fetchRemoteTracks(pl) {
 }
 
 function reconcileTracks(local, remote) {
-  const remoteById = new Map(remote.map(t => [t.videoId, t]));
-  const localIds = new Set(local.map(t => t.videoId));
+  const remoteById = new Map(remote.map(t => [trackKey(t), t]));
+  const localIds = new Set(local.map(trackKey));
   // Keep local order, refresh titles/channels from upstream (videos get renamed).
-  const kept = local.filter(t => remoteById.has(t.videoId)).map(t => ({ ...t, ...remoteById.get(t.videoId) }));
-  const added = remote.filter(t => !localIds.has(t.videoId));
+  const kept = local.filter(t => remoteById.has(trackKey(t))).map(t => ({ ...t, ...remoteById.get(trackKey(t)) }));
+  const added = remote.filter(t => !localIds.has(trackKey(t)));
   return { tracks: [...kept, ...added], added: added.length, removed: local.length - kept.length };
+}
+
+// A folder's contents — and their order on disk — are the whole truth, so a rescan
+// replaces the list outright instead of preserving an ordering the folder no longer has.
+function replaceTracks(local, remote) {
+  const localKeys = new Set(local.map(trackKey));
+  const remoteKeys = new Set(remote.map(trackKey));
+  return {
+    tracks: remote,
+    added: remote.filter(t => !localKeys.has(trackKey(t))).length,
+    removed: local.filter(t => !remoteKeys.has(trackKey(t))).length,
+  };
 }
 
 // Returns { added, removed }, or null when there was nothing to refresh against.
 async function refreshPlaylist(pl) {
   const remote = await fetchRemoteTracks(pl);
-  // An empty result is more likely a hiccup (private/unavailable/quota) than a
-  // genuinely emptied playlist — never wipe the user's tracks on that.
-  if (!Array.isArray(remote) || !remote.length) return null;
+  if (!Array.isArray(remote)) return null;
+  // An empty result from a remote source is more likely a hiccup (private/unavailable/
+  // quota) than a genuinely emptied playlist — never wipe the user's tracks on that.
+  // A folder scan reports what's actually there, empty included (a missing folder throws).
+  if (!remote.length && pl.source !== 'folder') return null;
 
-  const result = reconcileTracks(pl.tracks || [], remote);
+  const result = pl.source === 'folder'
+    ? replaceTracks(pl.tracks || [], remote)
+    : reconcileTracks(pl.tracks || [], remote);
   pl.tracks = result.tracks;
   pl.lastRefresh = Date.now();
 
   if (pl.id === state.activePlaylistId) {
-    const currentId = state.currentVideo?.videoId;
+    const currentKey = trackKey(state.currentVideo);
     state.queue = [...result.tracks];
-    // The playing track may have shifted (or vanished) — re-anchor by video id.
-    state.currentIndex = currentId ? state.queue.findIndex(v => v.videoId === currentId) : -1;
+    // The playing track may have shifted (or vanished) — re-anchor by track key.
+    state.currentIndex = currentKey ? state.queue.findIndex(v => trackKey(v) === currentKey) : -1;
     renderQueue();
   }
   return result;
 }
 
-const canRefresh = (pl) => (pl.source === 'google' ? !!pl.loaded : !!pl.ytId);
+const canRefresh = (pl) => {
+  if (pl.source === 'folder') return !!pl.folderPath;
+  if (pl.source === 'google') return !!pl.loaded;
+  return !!pl.ytId;
+};
 
 // `verbose` (manual run) always reports the outcome; the launch run stays quiet
 // unless something actually changed, so startup isn't noisy.
@@ -1113,7 +1242,7 @@ async function restorePlayback(saved) {
 
   try {
     const audio = el('youtube-player');
-    audio.src = await resolveAudioSrc(video.videoId);
+    audio.src = await resolveAudioSrc(video);
     const t = saved.currentTime || 0;
     if (t > 0) {
       audio.addEventListener('loadedmetadata', () => { audio.currentTime = t; }, { once: true });
@@ -1393,6 +1522,7 @@ function initIPCHandlers() {
       case 'switch-to-queue':  switchToQueue(); break;
       case 'delete-playlist':  deletePlaylist(action.id); break;
       case 'open-add-playlist': openAddPlaylistModal(); break;
+      case 'add-folder':       addFolderPlaylist(); break;
       case 'refresh-playlists': refreshAllPlaylists({ verbose: true }); break;
     }
     ipcRenderer.send('push-playlist-state', { playlists: state.playlists, activePlaylistId: state.activePlaylistId });

@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, session, screen, Menu, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { args: ytDlpArgs } = require('youtube-dl-exec');
 const { autoUpdater } = require('electron-updater');
@@ -547,6 +548,97 @@ ipcMain.handle('download-track', async (_, videoId, playlistName) => {
 ipcMain.handle('list-downloaded-ids', () => [...getLocalAudioIndex().keys()]);
 
 ipcMain.handle('get-local-audio-path', (_, videoId) => findLocalAudioFile(videoId));
+
+// ── Local folder playlists ──────────────────────────────────────────────────
+// Any folder of audio files can be used as a playlist. Tracks carry a localPath
+// instead of a videoId, so they play straight off disk and never touch YouTube.
+
+const LOCAL_AUDIO_EXT_RE = /\.(m4a|mp4|webm|weba|opus|ogg|oga|mp3|aac|flac|mka|wav|wma|aif|aiff)$/i;
+const FOLDER_SCAN_DEPTH = 4;
+
+// Filenames are all the metadata we read at scan time — parsing tags would mean one
+// ffmpeg spawn per file, which a 500-track folder can't afford. Two conventions are
+// recognised: this app's own downloads ("<title> [<videoId>]") and the common
+// "[track no.] Artist - Title". The videoId, when present, gets the track its YouTube
+// thumbnail back; playback still prefers the local file.
+function fileToTrack(file) {
+  const base = path.basename(file).replace(/\.[^.]+$/, '');
+  const idMatch = base.match(/\s*\[([\w-]{11})\]$/);
+  const name = (idMatch ? base.slice(0, idMatch.index) : base).trim();
+  // Leading track number: "07 ", "3. ", "12 - ", "1-18. " (disc-track). A bare number
+  // is only stripped when zero-padded, so artists like "21 Savage" survive intact.
+  const bare = name.replace(/^\s*(?:\d{1,3}(?:-\d{1,3})?\s*[.\-)]\s*|0\d\s+)/, '');
+  const split = bare.match(/^(.+?)\s+-\s+(.+)$/);
+  const track = {
+    localPath: file,
+    title: split ? split[2].trim() : bare,
+    channel: split ? split[1].trim() : '',
+  };
+  if (idMatch) track.videoId = idMatch[1];
+  return track;
+}
+
+function scanFolderTracks(root) {
+  const out = [];
+  const walk = (dir, depth) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    // Natural order so "track 2" precedes "track 10" — the order on disk is the
+    // only ordering a folder carries, so it has to look right.
+    entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    for (const entry of entries) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) { if (depth > 0) walk(p, depth - 1); continue; }
+      if (LOCAL_AUDIO_EXT_RE.test(entry.name)) out.push(fileToTrack(p));
+    }
+  };
+  walk(root, FOLDER_SCAN_DEPTH);
+  return out;
+}
+
+ipcMain.handle('choose-folder-playlist', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory'],
+    title: '재생목록으로 추가할 폴더 선택',
+    defaultPath: getMusicDir(),
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const dir = result.filePaths[0];
+  return { dir, name: path.basename(dir) || dir, tracks: scanFolderTracks(dir) };
+});
+
+ipcMain.handle('scan-folder-playlist', (_, dir) => {
+  if (!dir || !fs.existsSync(dir)) throw new Error('폴더를 찾을 수 없습니다');
+  return scanFolderTracks(dir);
+});
+
+// Embedded cover art, extracted on demand with the bundled ffmpeg and cached by file
+// path. Extraction takes a moment, so it never blocks playback — the renderer swaps the
+// art in when it arrives. Files with no art are remembered so ffmpeg isn't re-spawned
+// for them on every play.
+const coverMisses = new Set();
+
+ipcMain.handle('local-cover', async (_, file) => {
+  if (!file || coverMisses.has(file)) return null;
+  const dir = path.join(app.getPath('userData'), 'covers');
+  const key = crypto.createHash('sha1').update(file.toLowerCase()).digest('hex');
+  const out = path.join(dir, `${key}.jpg`);
+  if (fs.existsSync(out)) return out;
+  try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+  const ok = await new Promise((resolve) => {
+    execFile(
+      ffmpegPath,
+      ['-y', '-i', file, '-an', '-update', '1', '-frames:v', '1', out],
+      { windowsHide: true, timeout: 15000 },
+      (err) => resolve(!err),
+    );
+  });
+  if (ok && fs.existsSync(out)) return out;
+  coverMisses.add(file);
+  try { fs.unlinkSync(out); } catch {}
+  return null;
+});
 
 // A music folder inside OneDrive is a trap: with Files On-Demand the downloaded
 // tracks become cloud-only placeholders, so every playback makes OneDrive re-fetch

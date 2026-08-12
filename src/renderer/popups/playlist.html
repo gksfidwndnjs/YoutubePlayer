@@ -59,6 +59,9 @@
       display: flex; flex-direction: column; gap: 6px;
       padding: 8px 10px; border-bottom: 1px solid rgba(0,232,87,0.14);
     }
+    .pl-head-btns { display: flex; gap: 6px; }
+    .pl-head-btns .pl-refresh-btn { flex: 1; min-width: 0; }
+    .pl-head-btns #pl-add-folder { flex: none; white-space: nowrap; }
     .pl-refresh-btn {
       width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px;
       padding: 6px 8px; font-size: 10px; cursor: pointer;
@@ -91,7 +94,10 @@
   <div id="playlist-crt">
     <!-- Fixed header: refresh + search stay put while the list scrolls -->
     <div id="playlist-head">
-      <button id="pl-refresh" class="pl-refresh-btn btn-3d"></button>
+      <div class="pl-head-btns">
+        <button id="pl-refresh" class="pl-refresh-btn btn-3d"></button>
+        <button id="pl-add-folder" class="pl-refresh-btn btn-3d" title="내 PC의 폴더를 재생목록으로 추가">＋ 폴더</button>
+      </div>
       <input id="pl-search" type="text" placeholder="재생목록 검색…" spellcheck="false" autocomplete="off">
     </div>
     <div id="playlist-list"></div>

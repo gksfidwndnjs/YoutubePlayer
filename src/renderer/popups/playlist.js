@@ -7,7 +7,11 @@ ipcRenderer.on('apply-font', (_, f) => applyFont(f));
 ipcRenderer.on('playlist-state', (_, state) => render(state));
 
 // Mirrors app.js: a playlist can only be refreshed if we still know its source.
-const canRefresh = (pl) => (pl.source === 'google' ? !!pl.loaded : !!pl.ytId);
+const canRefresh = (pl) => {
+  if (pl.source === 'folder') return !!pl.folderPath;
+  if (pl.source === 'google') return !!pl.loaded;
+  return !!pl.ytId;
+};
 
 let current = { playlists: [], activePlaylistId: null };
 let query = '';
@@ -41,8 +45,9 @@ function renderList() {
     list.appendChild(queueItem);
   }
 
-  // Split into local (added by URL) and Google-account playlists.
-  let shown = appendSection(list, '로컬 재생목록', current.playlists.filter(p => p.source !== 'google'));
+  // Split into YouTube playlists (added by URL), on-disk folders, and Google-account lists.
+  let shown = appendSection(list, '로컬 재생목록', current.playlists.filter(p => !p.source));
+  shown += appendSection(list, '내 폴더', current.playlists.filter(p => p.source === 'folder'));
   shown += appendSection(list, 'Google 계정', current.playlists.filter(p => p.source === 'google'));
 
   if (!list.children.length) {
@@ -65,6 +70,7 @@ function appendSection(list, label, playlists) {
 
   visible.forEach(pl => {
     const item = makeItem(pl.name, pl.id, current.activePlaylistId === pl.id, pl.tracks.length, canRefresh(pl));
+    if (pl.folderPath) item.title = pl.folderPath;
     item.addEventListener('click', e => {
       if (e.target.closest('.delete-pl-btn')) return;
       ipcRenderer.send('popup-action', { type: 'switch-playlist', id: pl.id });
@@ -98,6 +104,13 @@ function escHtml(s) {
 
 document.getElementById('pl-refresh').addEventListener('click', () => {
   ipcRenderer.send('popup-action', { type: 'refresh-playlists' });
+  window.close();
+});
+
+// The folder picker is a modal dialog owned by the main window; close first so this
+// popup isn't left hanging behind it.
+document.getElementById('pl-add-folder').addEventListener('click', () => {
+  ipcRenderer.send('popup-action', { type: 'add-folder' });
   window.close();
 });
 
