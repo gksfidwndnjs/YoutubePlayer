@@ -26,7 +26,7 @@ YouTube 음원과 내 PC 음악을 한 곳에서 재생하는 데스크톱 위�
 ## 다운로드
 
 설치 파일은 [Releases](https://github.com/gksfidwndnjs/YoutubePlayer/releases/latest)의
-**Assets**에 있습니다. `Metalwave-Setup-1.4.11.exe` 형식이며, 함께 올라오는 `latest.yml`과
+**Assets**에 있습니다. `Metalwave-Setup-1.4.12.exe` 형식이며, 함께 올라오는 `latest.yml`과
 `.blockmap`은 자동 업데이트에만 쓰이는 파일입니다.
 
 설치 과정에서 두 항목을 선택합니다.

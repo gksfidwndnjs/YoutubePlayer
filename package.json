@@ -1,6 +1,6 @@
 {
   "name": "youtube-player",
-  "version": "1.4.11",
+  "version": "1.4.12",
   "description": "Metalwave for YouTube — compact desktop YouTube music player widget",
   "main": "src/main.js",
   "scripts": {

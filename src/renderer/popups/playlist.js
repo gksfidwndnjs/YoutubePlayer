@@ -16,6 +16,13 @@ const isUnlinked = (pl) => {
   return !pl.ytId;
 };
 
+// Refreshing is the narrower question: an unopened Google playlist is linked but has
+// nothing to diff against yet, so the bulk-refresh count skips it.
+const canRefresh = (pl) => {
+  if (pl.source === 'google') return !!pl.loaded;
+  return !isUnlinked(pl);
+};
+
 let current = { playlists: [], activePlaylistId: null };
 let query = '';
 
