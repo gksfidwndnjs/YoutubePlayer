@@ -108,6 +108,24 @@
       background: transparent; border: 1px solid rgba(0,232,87,0.3);
     }
     .res-btns .btn-icon:hover { background: rgba(0,232,87,0.12); }
+    /* Thin full-width "reveal more official audio" arrow under the official section */
+    .crt-more-btn {
+      display: flex; align-items: center; justify-content: center;
+      width: 100%; height: 15px; margin-top: 3px; padding: 0; cursor: pointer;
+      background: transparent; border: 1px solid rgba(0,232,87,0.22);
+      border-radius: 4px; color: rgba(0,232,87,0.7);
+    }
+    .crt-more-btn:hover:not(:disabled) {
+      background: rgba(0,232,87,0.1); border-color: rgba(0,232,87,0.45);
+      color: var(--crt-green);
+    }
+    .crt-more-btn:disabled { cursor: default; opacity: 0.6; }
+    .crt-more-btn svg { display: block; filter: drop-shadow(0 0 4px rgba(0,232,87,0.4)); }
+    /* Green, screen-sized variant of the shared spinner */
+    .crt-more-btn .spinner-sm {
+      width: 9px; height: 9px; border-width: 1.5px;
+      border-color: rgba(0,232,87,0.25); border-top-color: var(--crt-green);
+    }
     input[type="text"] {
       background-image:
         repeating-linear-gradient(0deg, transparent 0px, transparent 3px, rgba(0,0,0,0.13) 3px, rgba(0,0,0,0.13) 4px),
@@ -145,7 +163,7 @@
   </div>
   <div class="popup-section-body">
     <div class="input-row">
-      <input id="search-input" type="text" placeholder="재생목록 / 앨범 검색…" spellcheck="false">
+      <input id="search-input" type="text" placeholder="검색어 또는 재생목록 URL / ID…" spellcheck="false">
       <button id="search-btn" class="btn-icon btn-3d">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="6"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </button>

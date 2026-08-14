@@ -20,10 +20,12 @@ const TOAST_DURATION_MS = 3000;
 const TOAST_ERROR_DURATION_MS = 9000;
 const BATCH_GAP_MS = 800; // breathing room between batch downloads
 const PLAYBACK_SAVE_INTERVAL_MS = 5000;
+// A second mid-track death inside this window means re-extracting is not the answer.
+const MID_PLAY_RECOVER_COOLDOWN_MS = 30000;
 const SEARCH_MAX_RESULTS = 15;
 const YT_SEARCH_API = 'https://www.googleapis.com/youtube/v3/search';
-const LRCLIB_GET = 'https://lrclib.net/api/get';
-const LRCLIB_SEARCH = 'https://lrclib.net/api/search';
+const YT_PLAYLIST_API = 'https://www.googleapis.com/youtube/v3/playlists';
+const OFFICIAL_FETCH_SIZE = 10; // videos pulled per search page, before scoring
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -169,6 +171,23 @@ function extractPlaylistId(raw) {
   return m ? m[1] : null;
 }
 
+// search.list never returns YouTube Music's auto-generated album playlists
+// (OLAK5uy_…) — they are owned by the "YouTube" channel and simply are not indexed,
+// so an artist or album name can never reach them. playlists.list resolves the very
+// same album by ID without trouble, so a pasted URL (or a bare ID) skips search.
+// A bare ID needs a tighter test than the prefix alone: "PLAYLISTOFSONGS" is a
+// search someone might actually type, while a real ID is base64-ish and always
+// carries a digit or separator. Both conditions must hold before we skip search.
+const BARE_PLAYLIST_ID_RE = /^(?:OLAK5uy_|PL|UU|LL|FL|RD)[A-Za-z0-9_-]{10,}$/;
+const ID_LIKE_RE = /[0-9_-]/;
+
+function playlistIdFromQuery(raw) {
+  const q = String(raw || '').trim();
+  const fromUrl = extractPlaylistId(q);
+  if (fromUrl) return fromUrl;
+  return BARE_PLAYLIST_ID_RE.test(q) && ID_LIKE_RE.test(q) ? q : null;
+}
+
 // Score a video search hit by how likely it is to be an official release, so we
 // can surface "official audio" at the top of search results. Auto-generated
 // "- Topic" channels and VEVO host the label's official audio; live/cover/remix
@@ -215,11 +234,40 @@ const fileUrl = (p) => require('url').pathToFileURL(p).href;
 
 // Prefer a local file — the track's own file for folder playlists, a previous
 // download otherwise; fall back to a streaming URL.
-async function resolveAudioSrc(video) {
+async function resolveAudioSrc(video, { refresh = false } = {}) {
   if (video.localPath) return fileUrl(video.localPath);
   const localPath = await ipcRenderer.invoke('get-local-audio-path', video.videoId);
   if (localPath) return fileUrl(localPath);
-  return ipcRenderer.invoke('get-audio-url', video.videoId, state.settings.audioQuality);
+  return ipcRenderer.invoke('get-audio-url', video.videoId, state.settings.audioQuality, refresh);
+}
+
+// Cross-origin media requests carry the session's cookies by default. The stream URL is
+// minted for a different YouTube client than the signed-in web session those cookies
+// belong to, and googlevideo answers that mismatch with a 403 — which reaches us as an
+// unhelpful "Format error". 'anonymous' drops the cookies from the request. It must be
+// set before the src assignment to take effect, and must not be set for local files.
+function setAudioSrc(audio, src) {
+  audio.crossOrigin = /^https?:/i.test(src) ? 'anonymous' : null;
+  audio.src = src;
+}
+
+// When playback of a remote stream fails, re-run the identical URL through the main
+// process, which does not use the renderer's Chromium session. A success there against a
+// failure here means the URL is fine and the renderer's own request is what got refused.
+async function probeFailedSrc(src) {
+  if (!/^https?:/i.test(src || '')) return;
+  try {
+    console.warn('[playback] same URL via main process:', await ipcRenderer.invoke('probe-audio-url', src));
+  } catch {}
+}
+
+// A <audio> failure surfaces as a bare rejection; the useful part is on the element.
+const MEDIA_ERR_NAME = { 1: 'ABORTED', 2: 'NETWORK', 3: 'DECODE', 4: 'SRC_NOT_SUPPORTED' };
+
+function mediaErrorDetail(audio, err) {
+  const e = audio.error;
+  if (e) return `${MEDIA_ERR_NAME[e.code] || e.code}${e.message ? ': ' + e.message : ''}`;
+  return err?.message || String(err);
 }
 
 // Cover art for a folder track: embedded art extracted by the main process (cached on
@@ -334,39 +382,14 @@ function parseLRC(lrc) {
   return out;
 }
 
-async function lrclibFetch(url) {
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  return res.json();
-}
-
+// The LRCLIB request itself runs in the main process, which can set a User-Agent
+// (forbidden to us here) and cache the answer on disk across restarts.
 // Returns { syncedLyrics, plainLyrics } or null.
 async function fetchLyrics({ artist, title }, duration) {
   if (!title) return null;
-  const dur = Math.round(duration || 0);
-  // Exact match first (duration-disambiguated).
   try {
-    const q = new URLSearchParams({ track_name: title, artist_name: artist });
-    if (dur) q.set('duration', String(dur));
-    const got = await lrclibFetch(`${LRCLIB_GET}?${q}`);
-    if (got && (got.syncedLyrics || got.plainLyrics)) return got;
-  } catch {}
-  // Fallback: search, then pick the closest duration (or first hit).
-  try {
-    const q = new URLSearchParams({ track_name: title });
-    if (artist) q.set('artist_name', artist);
-    const hits = await lrclibFetch(`${LRCLIB_SEARCH}?${q}`);
-    if (Array.isArray(hits) && hits.length) {
-      const withLyrics = hits.filter(h => h.syncedLyrics || h.plainLyrics);
-      if (!withLyrics.length) return null;
-      if (dur) {
-        withLyrics.sort((a, b) =>
-          Math.abs((a.duration || 0) - dur) - Math.abs((b.duration || 0) - dur));
-      }
-      return withLyrics[0];
-    }
-  } catch {}
-  return null;
+    return await ipcRenderer.invoke('fetch-lyrics', { artist, title, duration });
+  } catch { return null; }
 }
 
 function resetLyrics() {
@@ -560,16 +583,39 @@ async function playVideo(video) {
   el('time-duration').textContent = '--:--';
   syncTrack(el('progress-bar'));
 
-  try {
-    audio.src = await resolveAudioSrc(video);
+  // A stream URL can be refused after it was handed out, and that looks exactly like a
+  // dead track. Re-extract once before writing the song off — the retry costs a yt-dlp
+  // call, which is far cheaper than silently skipping a song that is perfectly fine.
+  const attempt = async (refresh) => {
+    setAudioSrc(audio, await resolveAudioSrc(video, { refresh }));
     await audio.play();
+  };
+
+  try {
+    await attempt(false);
     state.playing = true;
     setLoading(false);
+    return;
   } catch (err) {
-    showToast(`Failed: ${video.title || trackKey(video)} — skipping`, 'error');
-    setLoading(false);
-    if (state.currentIndex < state.queue.length - 1) playNext();
+    console.warn(`[playback] ${trackKey(video)} failed:`, mediaErrorDetail(audio, err));
+    await probeFailedSrc(audio.src);
+    // Only a remote stream can be recovered by re-extracting; a local file cannot.
+    if (!video.localPath) {
+      try {
+        await attempt(true);
+        console.info(`[playback] ${trackKey(video)} recovered with a fresh URL`);
+        state.playing = true;
+        setLoading(false);
+        return;
+      } catch (err2) {
+        console.warn(`[playback] ${trackKey(video)} retry failed:`, mediaErrorDetail(audio, err2));
+      }
+    }
   }
+
+  showToast(`Failed: ${video.title || trackKey(video)} — skipping`, 'error');
+  setLoading(false);
+  if (state.currentIndex < state.queue.length - 1) playNext();
 }
 
 function togglePlayPause() {
@@ -1262,7 +1308,7 @@ async function restorePlayback(saved) {
 
   try {
     const audio = el('youtube-player');
-    audio.src = await resolveAudioSrc(video);
+    setAudioSrc(audio, await resolveAudioSrc(video));
     const t = saved.currentTime || 0;
     if (t > 0) {
       audio.addEventListener('loadedmetadata', () => { audio.currentTime = t; }, { once: true });
@@ -1335,6 +1381,44 @@ function applyMetalTexture() {
 // ── Init sub-functions ────────────────────────────────────────────────────
 
 function initAudio(audio) {
+  // Playback can die part-way through when the stream URL stops being served. Nothing
+  // else catches that — play() resolved long ago — so recover here by re-extracting and
+  // resuming at the point it stopped. The cooldown keeps a genuinely dead track from
+  // looping: if a fresh URL dies again straight away, the track is left alone.
+  let recovering = false;
+  let lastRecoverAt = 0;
+  audio.addEventListener('error', async () => {
+    const video = state.currentVideo;
+    if (!video || video.localPath || recovering) return;
+    // Switching tracks clears the source first, and an empty src raises this same event.
+    // Only a live remote stream can have genuinely died, so anything else is not ours.
+    if (!/^https?:/i.test(audio.currentSrc || '')) return;
+    if (Date.now() - lastRecoverAt < MID_PLAY_RECOVER_COOLDOWN_MS) return;
+    recovering = true;
+    lastRecoverAt = Date.now();
+    const resumeAt = audio.currentTime;
+    console.warn(`[playback] ${trackKey(video)} died at ${resumeAt.toFixed(1)}s:`, mediaErrorDetail(audio));
+    await probeFailedSrc(audio.src);
+    try {
+      const src = await resolveAudioSrc(video, { refresh: true });
+      if (state.currentVideo !== video) return; // user moved on while we were fetching
+      setAudioSrc(audio, src);
+      audio.addEventListener('loadedmetadata', () => { audio.currentTime = resumeAt; }, { once: true });
+      await audio.play();
+      state.playing = true;
+      console.info(`[playback] ${trackKey(video)} resumed at ${resumeAt.toFixed(1)}s`);
+    } catch (err) {
+      if (state.currentVideo !== video) return;
+      // play() rejects with AbortError when a newer load supersedes it — that is the
+      // user moving on, not a failure, and it must not raise an alarm.
+      if (err?.name === 'AbortError') return;
+      console.warn(`[playback] ${trackKey(video)} could not resume:`, mediaErrorDetail(audio, err));
+      showToast(`재생 중단: ${video.title || trackKey(video)}`, 'error');
+    } finally {
+      recovering = false;
+    }
+  });
+
   audio.addEventListener('ended', () => {
     if (state.playbackMode === 'repeat-one') {
       playFromQueue(state.currentIndex);
@@ -1488,17 +1572,78 @@ function initIPCHandlers() {
     showToast('Google 로그아웃됨', 'success');
   });
 
-  ipcRenderer.on('popup-search-request', async (_, query) => {
+  // `req` is { query, pageToken }; pageToken asks for another page of official audio
+  // only (the popup's "more" arrow), leaving the playlist column as it was.
+  ipcRenderer.on('popup-search-request', async (_, req) => {
+    const { query, pageToken } = typeof req === 'string' ? { query: req } : (req || {});
     if (!state.apiKey) { ipcRenderer.send('popup-search-response', { error: true }); return; }
     try {
       const key = encodeURIComponent(state.apiKey);
-      const q = encodeURIComponent(query);
+      const q = encodeURIComponent(query || '');
       const thumbOf = s => s?.thumbnails?.medium?.url || s?.thumbnails?.default?.url || '';
-      const [plData, vidData] = await Promise.all([
-        fetch(`${YT_SEARCH_API}?part=snippet&q=${q}&type=playlist&maxResults=${SEARCH_MAX_RESULTS}&key=${key}`).then(r => r.json()).catch(() => ({})),
-        fetch(`${YT_SEARCH_API}?part=snippet&q=${q}&type=video&maxResults=10&key=${key}`).then(r => r.json()).catch(() => ({})),
+      const getJSON = (url) => fetch(url).then(r => r.json()).catch(() => ({}));
+      // Officials are ranked but no longer truncated here: the popup reveals them a
+      // few at a time, so anything scored is worth sending.
+      const rankOfficial = (items) => (items || [])
+        .map(i => ({
+          videoId: i.id.videoId,
+          title: i.snippet.title,
+          channel: i.snippet.channelTitle,
+          thumb: thumbOf(i.snippet),
+        }))
+        .map(v => ({ v, s: officialScore(v) }))
+        .filter(x => x.s > 0)
+        .sort((a, b) => b.s - a.s)
+        .map(x => x.v);
+
+      const videoSearch = (token) => getJSON(
+        `${YT_SEARCH_API}?part=snippet&q=${q}&type=video&maxResults=${OFFICIAL_FETCH_SIZE}`
+        + `${token ? `&pageToken=${encodeURIComponent(token)}` : ''}&key=${key}`);
+
+      if (pageToken) {
+        const d = await videoSearch(pageToken);
+        if (d.error) { ipcRenderer.send('popup-search-response', { error: true }); return; }
+        ipcRenderer.send('popup-search-response', {
+          more: true,
+          official: rankOfficial(d.items),
+          officialPageToken: d.nextPageToken || null,
+        });
+        return;
+      }
+
+      // A pasted playlist URL or bare ID is an exact answer — resolve it directly
+      // instead of searching, which is the only way to reach an OLAK5uy_ album.
+      const pid = playlistIdFromQuery(query);
+      if (pid) {
+        const d = await getJSON(`${YT_PLAYLIST_API}?part=snippet&id=${encodeURIComponent(pid)}&key=${key}`);
+        const it = (d.items || [])[0];
+        if (it) {
+          ipcRenderer.send('popup-search-response', {
+            official: [],
+            playlists: [{
+              playlistId: it.id,
+              title: it.snippet.title,
+              channel: it.snippet.channelTitle,
+              thumb: thumbOf(it.snippet),
+            }],
+            officialPageToken: null,
+          });
+          return;
+        }
+        // Private, deleted, or not a playlist at all — fall through to a plain search.
+      }
+
+      // Albums come from YouTube Music, which is the only source that indexes them;
+      // it needs no API key, so it runs even when the other two fail.
+      const [plData, vidData, albums] = await Promise.all([
+        getJSON(`${YT_SEARCH_API}?part=snippet&q=${q}&type=playlist&maxResults=${SEARCH_MAX_RESULTS}&key=${key}`),
+        videoSearch(null),
+        ipcRenderer.invoke('search-albums', query).catch(() => []),
       ]);
-      if (plData.error && vidData.error) { ipcRenderer.send('popup-search-response', { error: true }); return; }
+      if (plData.error && vidData.error && !albums.length) {
+        ipcRenderer.send('popup-search-response', { error: true });
+        return;
+      }
 
       const playlists = (plData.items || []).map(i => ({
         playlistId: i.id.playlistId,
@@ -1507,20 +1652,12 @@ function initIPCHandlers() {
         thumb: thumbOf(i.snippet),
       }));
 
-      const videos = (vidData.items || []).map(i => ({
-        videoId: i.id.videoId,
-        title: i.snippet.title,
-        channel: i.snippet.channelTitle,
-        thumb: thumbOf(i.snippet),
-      }));
-      const official = videos
-        .map(v => ({ v, s: officialScore(v) }))
-        .filter(x => x.s > 0)
-        .sort((a, b) => b.s - a.s)
-        .slice(0, 3)
-        .map(x => x.v);
-
-      ipcRenderer.send('popup-search-response', { official, playlists });
+      ipcRenderer.send('popup-search-response', {
+        official: rankOfficial(vidData.items),
+        albums,
+        playlists,
+        officialPageToken: vidData.nextPageToken || null,
+      });
     } catch { ipcRenderer.send('popup-search-response', { error: true }); }
   });
 

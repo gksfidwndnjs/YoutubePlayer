@@ -49,13 +49,23 @@ const YT_DLP_MAX_BUFFER = 64 * 1024 * 1024; // playlist dumps get large
 // Every call waits on it so nothing ever spawns the binary mid-replacement.
 let ytDlpReady = Promise.resolve();
 
-async function youtubeDl(url, flags = {}) {
+// yt-dlp needs a JavaScript runtime to solve YouTube's player challenges. Without one
+// it warns that extraction is deprecated and that formats may go missing. A system Node
+// may be absent entirely in the packaged app, and the one on this machine (20.x) yt-dlp
+// rejects as too old — but Electron bundles Node 22, and ELECTRON_RUN_AS_NODE makes our
+// own binary behave as one. process.execPath is the Electron binary in development and
+// the app executable once packaged, so this needs no extra dependency either way.
+const JS_RUNTIME_ARGS = () => ['--js-runtimes', `node:${process.execPath}`];
+// yt-dlp itself is a standalone exe and ignores this; the runtime it spawns inherits it.
+const ytDlpEnv = () => ({ ...process.env, ELECTRON_RUN_AS_NODE: '1' });
+
+async function youtubeDl(url, flags = {}, rawArgs = []) {
   await ytDlpReady;
   return new Promise((resolve, reject) => {
     execFile(
       ytDlpPath,
-      [url, ...ytDlpArgs(flags)],
-      { maxBuffer: YT_DLP_MAX_BUFFER, windowsHide: true },
+      [url, ...JS_RUNTIME_ARGS(), ...rawArgs, ...ytDlpArgs(flags)],
+      { maxBuffer: YT_DLP_MAX_BUFFER, windowsHide: true, env: ytDlpEnv() },
       (err, stdout, stderr) => {
         if (err) reject(Object.assign(err, { stdout, stderr }));
         else resolve(stdout);
@@ -830,18 +840,309 @@ ipcMain.handle('choose-music-dir', async (event) => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('get-audio-url', async (_, videoId, quality) => {
-  const hit = getCached(videoId, quality);
-  if (hit) return hit;
+// `refresh` re-extracts even when a cached URL looks valid: a stream URL can stop
+// working while its own expire timestamp still says otherwise, and the cached copy is
+// then poison for as long as we keep it.
+// YouTube refuses some (video, player client) pairs outright: the extraction succeeds
+// and the URL it hands back answers every request with 403. Which client is refused
+// varies per video and changes over time, so no single one can be relied on — but some
+// client works for any given track. Try them in turn, and since a URL that extracts
+// cleanly can still be dead, ask for one byte to tell the difference before committing.
+const AUDIO_PLAYER_CLIENTS = ['web_embedded', 'android', 'tv_embedded'];
+const URL_CHECK_TIMEOUT_MS = 6000;
+
+async function urlPlayable(url) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), URL_CHECK_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      signal: ac.signal,
+      headers: { 'User-Agent': USER_AGENT, Range: 'bytes=0-1' },
+    });
+    try { await res.body?.cancel(); } catch {}
+    return res.status === 206 || res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function extractAudioUrl(videoId, quality, client) {
   const fmt = quality === 'standard'
     ? 'bestaudio[abr<=128]/bestaudio'
     : 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best';
-  const raw = await youtubeDl(YT_WATCH_URL(videoId), {
-    getUrl: true, format: fmt, noPlaylist: true, noWarnings: true,
-  });
-  const url = raw.trim().split('\n')[0];
-  setCached(videoId, quality, url);
-  return url;
+  const raw = await youtubeDl(
+    YT_WATCH_URL(videoId),
+    { getUrl: true, format: fmt, noPlaylist: true, noWarnings: true },
+    ['--extractor-args', `youtube:player_client=${client}`],
+  );
+  return raw.trim().split('\n')[0];
+}
+
+// Which client last produced a playable URL for a video. A refusal stays put for a
+// while, so starting with what worked last time usually turns three extractions into
+// one — and each extraction is a yt-dlp run, which is the slow part of a first play.
+const workingClient = new Map(); // videoId -> client
+
+const clientOrder = (videoId) => {
+  const known = workingClient.get(videoId);
+  return known
+    ? [known, ...AUDIO_PLAYER_CLIENTS.filter(c => c !== known)]
+    : AUDIO_PLAYER_CLIENTS;
+};
+
+async function resolveAudioUrl(videoId, quality, refresh) {
+  if (refresh) audioCache.delete(`${videoId}:${quality}`);
+  const hit = refresh ? null : getCached(videoId, quality);
+  if (hit) { console.log(`[audio-url] ${videoId} cache-hit`); return hit; }
+
+  let lastUrl = null;
+  for (const client of clientOrder(videoId)) {
+    let url;
+    try {
+      url = await extractAudioUrl(videoId, quality, client);
+    } catch {
+      console.log(`[audio-url] ${videoId} ${client}: extraction failed`);
+      continue;
+    }
+    if (!url) { console.log(`[audio-url] ${videoId} ${client}: no URL`); continue; }
+    lastUrl = url;
+    if (await urlPlayable(url)) {
+      console.log(`[audio-url] ${videoId} ${client}: ok`);
+      workingClient.set(videoId, client);
+      setCached(videoId, quality, url);
+      return url;
+    }
+    console.log(`[audio-url] ${videoId} ${client}: refused, trying next`);
+    if (workingClient.get(videoId) === client) workingClient.delete(videoId);
+  }
+
+  // Every client was refused. Hand back the last URL anyway rather than failing here —
+  // the one-byte check is a probe, not proof, and the player reports its own errors.
+  console.log(`[audio-url] ${videoId} no client accepted; using last URL`);
+  if (lastUrl) setCached(videoId, quality, lastUrl);
+  return lastUrl;
+}
+
+// One resolution per track at a time, however many callers ask for it — the same guard
+// the cover and lyrics lookups use. Without it a track being opened twice at once runs
+// the whole client ladder twice, doubling both the wait and the load on YouTube.
+const audioUrlPending = new Map();
+
+ipcMain.handle('get-audio-url', (_, videoId, quality, refresh = false) => {
+  const key = `${videoId}:${quality}`;
+  if (!refresh && audioUrlPending.has(key)) return audioUrlPending.get(key);
+  const run = resolveAudioUrl(videoId, quality, refresh)
+    .finally(() => { if (audioUrlPending.get(key) === run) audioUrlPending.delete(key); });
+  audioUrlPending.set(key, run);
+  return run;
+});
+
+// Diagnostic: fetch a stream URL from the main process, which uses Node's network
+// stack rather than the renderer's Chromium session. When playback fails, running the
+// very same URL through here says whether the URL is bad or whether something in the
+// renderer's request is being refused.
+ipcMain.handle('probe-audio-url', async (_, url) => {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 8000);
+  const t0 = Date.now();
+  try {
+    const res = await fetch(url, {
+      signal: ac.signal,
+      headers: { 'User-Agent': USER_AGENT, Range: 'bytes=0-' },
+    });
+    let got = 0;
+    for await (const chunk of res.body) {
+      got += chunk.length;
+      if (got > 256 * 1024) break; // enough to prove the body is really flowing
+    }
+    const result = { status: res.status, kb: Math.round(got / 1024), ms: Date.now() - t0 };
+    console.log(`[probe] main-process fetch -> HTTP ${result.status}, ${result.kb} KB in ${result.ms}ms`);
+    return result;
+  } catch (err) {
+    console.log(`[probe] main-process fetch -> failed: ${err.message}`);
+    return { status: 'error', error: err.message };
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
+// ── Lyrics (LRCLIB) ───────────────────────────────────────────────────────
+//
+// The lookup lives here rather than in the renderer for two reasons: a renderer
+// fetch cannot set User-Agent (it is a forbidden header, so Chrome silently drops
+// it and we would go out looking like anonymous traffic), and the disk cache needs
+// userData. Requests still leave from each user's own machine, so there is no
+// shared quota to exhaust — the cache is about being a light guest on a free,
+// volunteer-run service, not about staying under a limit.
+
+const LRCLIB_GET    = 'https://lrclib.net/api/get';
+const LRCLIB_SEARCH = 'https://lrclib.net/api/search';
+// Built on demand: this module is evaluated before app is ready.
+const lrclibUA = () =>
+  `Metalwave/${app.getVersion()} (https://github.com/gksfidwndnjs/YoutubePlayer)`;
+
+// A hit is stable; a miss is not — LRCLIB gains lyrics over time, so re-ask for
+// the ones we failed to find sooner than we re-ask for the ones we have.
+const LYRICS_TTL_HIT  = 30 * 24 * 3600 * 1000;
+const LYRICS_TTL_MISS =  7 * 24 * 3600 * 1000;
+
+const lyricsCacheKey = (artist, title, duration) => crypto
+  .createHash('sha1')
+  .update([artist, title, duration].join('\u0000').toLowerCase())
+  .digest('hex');
+
+const lyricsCacheFile = (key) =>
+  path.join(app.getPath('userData'), 'lyrics', `${key}.json`);
+
+function readLyricsCache(key) {
+  const entry = readJSON(lyricsCacheFile(key), null);
+  if (!entry || typeof entry.at !== 'number') return undefined;
+  const ttl = entry.data ? LYRICS_TTL_HIT : LYRICS_TTL_MISS;
+  if (Date.now() - entry.at > ttl) return undefined;
+  return entry.data; // null is a cached miss, and distinct from undefined
+}
+
+function writeLyricsCache(key, data) {
+  try {
+    fs.mkdirSync(path.join(app.getPath('userData'), 'lyrics'), { recursive: true });
+    writeJSON(lyricsCacheFile(key), { at: Date.now(), data });
+  } catch {}
+}
+
+async function lrclibFetch(url) {
+  const res = await fetch(url, { headers: { 'User-Agent': lrclibUA() } });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+// Returns { syncedLyrics, plainLyrics } or null.
+async function lookupLyrics(artist, title, duration) {
+  // Exact match first (duration-disambiguated).
+  try {
+    const q = new URLSearchParams({ track_name: title, artist_name: artist });
+    if (duration) q.set('duration', String(duration));
+    const got = await lrclibFetch(`${LRCLIB_GET}?${q}`);
+    if (got && (got.syncedLyrics || got.plainLyrics)) {
+      return { syncedLyrics: got.syncedLyrics || '', plainLyrics: got.plainLyrics || '' };
+    }
+  } catch {}
+  // Fallback: search, then pick the closest duration (or first hit).
+  try {
+    const q = new URLSearchParams({ track_name: title });
+    if (artist) q.set('artist_name', artist);
+    const hits = await lrclibFetch(`${LRCLIB_SEARCH}?${q}`);
+    if (Array.isArray(hits) && hits.length) {
+      const withLyrics = hits.filter(h => h.syncedLyrics || h.plainLyrics);
+      if (!withLyrics.length) return null;
+      if (duration) {
+        withLyrics.sort((a, b) =>
+          Math.abs((a.duration || 0) - duration) - Math.abs((b.duration || 0) - duration));
+      }
+      const best = withLyrics[0];
+      return { syncedLyrics: best.syncedLyrics || '', plainLyrics: best.plainLyrics || '' };
+    }
+  } catch {}
+  return null;
+}
+
+// One lookup per key at a time, however many callers ask for it.
+const lyricsPending = new Map();
+
+ipcMain.handle('fetch-lyrics', (_, { artist = '', title = '', duration = 0 } = {}) => {
+  if (!title) return null;
+  const dur = Math.round(duration) || 0;
+  const key = lyricsCacheKey(artist, title, dur);
+
+  const cached = readLyricsCache(key);
+  if (cached !== undefined) return cached;
+
+  if (!lyricsPending.has(key)) {
+    const run = lookupLyrics(artist, title, dur)
+      .catch(() => null)
+      .then((data) => { writeLyricsCache(key, data); return data; })
+      .finally(() => lyricsPending.delete(key));
+    lyricsPending.set(key, run);
+  }
+  return lyricsPending.get(key);
+});
+
+// ── Album search (YouTube Music) ──────────────────────────────────────────
+//
+// The Data API's search.list cannot see YouTube Music's auto-generated album
+// playlists (OLAK5uy_…) at all — they belong to the "YouTube" channel and are not
+// indexed — so an artist or album name can never reach an official album through it.
+// The YouTube Music web app's own search endpoint does return them. It is internal
+// and undocumented: no key, no quota, but no stability promise either. Every failure
+// path here returns [] so the caller quietly falls back to the official search.
+
+const YTM_SEARCH_URL = 'https://music.youtube.com/youtubei/v1/search?prettyPrint=false';
+const YTM_ALBUM_FILTER = 'EgWKAQIYAWoMEA4QChADEAQQCRAF'; // "Albums" tab
+const YTM_CONTEXT = {
+  client: { clientName: 'WEB_REMIX', clientVersion: '1.20240401.01.00', hl: 'ko', gl: 'KR' },
+};
+const YTM_TIMEOUT_MS = 8000;
+const YTM_MAX_ALBUMS = 8;
+const OLAK_RE = /OLAK5uy_[A-Za-z0-9_-]+/;
+
+// Depth-first walk for every album row in the response. The renderer tree is deep and
+// its exact shape shifts between releases, so this reads the few fields it needs and
+// tolerates their absence rather than assuming a fixed path.
+function collectAlbums(node, out = []) {
+  if (!node || typeof node !== 'object') return out;
+  if (Array.isArray(node)) { for (const n of node) collectAlbums(n, out); return out; }
+
+  const r = node.musicResponsiveListItemRenderer;
+  if (r) {
+    const cols = (r.flexColumns || []).map(c =>
+      (c?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || [])
+        .map(run => run.text).join(''));
+    // The play overlay carries the album's playlist id; fall back to any OLAK5uy_
+    // elsewhere in the row, since the overlay is the part most likely to move.
+    const playlistId =
+      r.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer
+        ?.playNavigationEndpoint?.watchPlaylistEndpoint?.playlistId
+      || JSON.stringify(r).match(OLAK_RE)?.[0]
+      || null;
+    const thumbs = r.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails || [];
+    if (playlistId && OLAK_RE.test(playlistId) && cols[0]) {
+      out.push({
+        playlistId,
+        title: cols[0],
+        // e.g. "EP · 희대의 · 2026" — the row's own subtitle, minus empty segments.
+        channel: cols.slice(1).filter(Boolean).join(' · ').replace(/\s*·\s*$/, ''),
+        thumb: thumbs[thumbs.length - 1]?.url || '',
+      });
+    }
+  }
+  for (const v of Object.values(node)) collectAlbums(v, out);
+  return out;
+}
+
+ipcMain.handle('search-albums', async (_, query) => {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), YTM_TIMEOUT_MS);
+  try {
+    const res = await fetch(YTM_SEARCH_URL, {
+      method: 'POST',
+      signal: ac.signal,
+      headers: { 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
+      body: JSON.stringify({ context: { client: YTM_CONTEXT.client }, query: q, params: YTM_ALBUM_FILTER }),
+    });
+    if (!res.ok) return [];
+    const albums = collectAlbums(await res.json());
+    // The same album can appear in more than one shelf; keep the first of each.
+    const seen = new Set();
+    return albums.filter(a => !seen.has(a.playlistId) && seen.add(a.playlistId))
+      .slice(0, YTM_MAX_ALBUMS);
+  } catch {
+    return []; // aborted, offline, or the response shape moved — fall back silently
+  } finally {
+    clearTimeout(timer);
+  }
 });
 
 // ── Window ────────────────────────────────────────────────────────────────

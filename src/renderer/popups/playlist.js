@@ -6,11 +6,14 @@ document.addEventListener('DOMContentLoaded', () => applyMetalTexture([document.
 ipcRenderer.on('apply-font', (_, f) => applyFont(f));
 ipcRenderer.on('playlist-state', (_, state) => render(state));
 
-// Mirrors app.js: a playlist can only be refreshed if we still know its source.
-const canRefresh = (pl) => {
-  if (pl.source === 'folder') return !!pl.folderPath;
-  if (pl.source === 'google') return !!pl.loaded;
-  return !!pl.ytId;
+// The warning marks a playlist whose origin is gone for good, not one that merely
+// cannot be refreshed this instant. A Google playlist is always linked — its own id is
+// the link — and simply loads its tracks the first time it is opened, so flagging an
+// unopened one told the user something was wrong when nothing was.
+const isUnlinked = (pl) => {
+  if (pl.source === 'folder') return !pl.folderPath;
+  if (pl.source === 'google') return false;
+  return !pl.ytId;
 };
 
 let current = { playlists: [], activePlaylistId: null };
@@ -69,7 +72,7 @@ function appendSection(list, label, playlists) {
   list.appendChild(hdr);
 
   visible.forEach(pl => {
-    const item = makeItem(pl.name, pl.id, current.activePlaylistId === pl.id, pl.tracks.length, canRefresh(pl));
+    const item = makeItem(pl.name, pl.id, current.activePlaylistId === pl.id, pl.tracks.length, !isUnlinked(pl));
     if (pl.folderPath) item.title = pl.folderPath;
     item.addEventListener('click', e => {
       if (e.target.closest('.delete-pl-btn')) return;

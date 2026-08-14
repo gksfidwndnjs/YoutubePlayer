@@ -30,12 +30,15 @@ el('search-input').addEventListener('keydown', e => { if (e.key === 'Enter') doS
 
 let lastResults = null; // cache so the playlist "back" button can restore results
 
+let lastQuery = '';
+
 function doSearch() {
   const q = el('search-input').value.trim();
   if (!q) return;
   if (!apiKey) { el('search-no-key').classList.remove('hidden'); return; }
+  lastQuery = q;
   setScreen('<div class="loading-row"><div class="spinner"></div></div>');
-  ipcRenderer.send('popup-search-request', q);
+  ipcRenderer.send('popup-search-request', { query: q });
 }
 
 function setScreen(html) { el('search-results').innerHTML = html; }
@@ -43,28 +46,121 @@ function setScreen(html) { el('search-results').innerHTML = html; }
 const PLAY_SVG  = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
 const PLUS_SVG  = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
 const OPEN_SVG  = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 6 15 12 9 18"/></svg>';
+const CHEVRON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
 
 // ── Search results (official audio + playlists) ──
-ipcRenderer.on('search-results', (_, data) => { lastResults = data; renderResults(data); });
-ipcRenderer.on('search-error', () => setScreen('<div class="crt-msg">검색 실패</div>'));
+ipcRenderer.on('search-results', (_, data) => {
+  if (data && data.more) { appendOfficial(data); return; }
+  lastResults = data;
+  renderResults(data);
+});
+ipcRenderer.on('search-error', () => {
+  // A failed "more" page must not wipe the results already on screen.
+  if (officialLoading) { officialLoading = false; syncMoreBtn(); return; }
+  setScreen('<div class="crt-msg">검색 실패</div>');
+});
+
+// Officials arrive ranked but unbounded; they are revealed a page at a time so the
+// screen still opens on the three best matches.
+const OFFICIAL_PAGE = 3;
+let officialQueue = [];      // ranked, not yet on screen
+let officialPageToken = null; // more pages available from the API
+let officialLoading = false;
 
 function renderResults(data) {
   const official = (data && data.official) || [];
+  const albums = (data && data.albums) || [];
   const playlists = (data && data.playlists) || [];
   const box = el('search-results');
   box.innerHTML = '';
-  if (!official.length && !playlists.length) {
+  officialQueue = official.slice();
+  officialPageToken = (data && data.officialPageToken) || null;
+  officialLoading = false;
+  emptyPages = 0;
+  if (!official.length && !albums.length && !playlists.length) {
     box.innerHTML = '<div class="crt-msg">결과 없음</div>';
     return;
   }
   if (official.length) {
     box.appendChild(barEl('추천 · 공식 음원'));
-    official.forEach(v => box.appendChild(videoCard(v, true)));
+    const list = document.createElement('div');
+    list.id = 'official-list';
+    box.appendChild(list);
+    box.appendChild(moreBtnEl());
+    revealOfficial();
+  }
+  // Official albums outrank user-made playlists: they are the actual release.
+  if (albums.length) {
+    box.appendChild(barEl('공식 앨범'));
+    albums.forEach(a => box.appendChild(playlistCard(a, true)));
   }
   if (playlists.length) {
     box.appendChild(barEl('재생목록'));
     playlists.forEach(p => box.appendChild(playlistCard(p)));
   }
+}
+
+// Move the next page of ranked officials from the queue onto the screen.
+function revealOfficial() {
+  const list = el('official-list');
+  if (!list) return;
+  officialQueue.splice(0, OFFICIAL_PAGE)
+    .forEach(v => list.appendChild(videoCard(v, true)));
+  syncMoreBtn();
+}
+
+// Later search pages drift away from the artist, so a page can score no official
+// audio at all while the API still offers a next token. Skip through those instead
+// of leaving an arrow that visibly does nothing — but only a couple of times, since
+// each page is a full search request.
+const MAX_EMPTY_PAGES = 2;
+let emptyPages = 0;
+
+function appendOfficial(data) {
+  const fresh = data.official || [];
+  officialQueue = officialQueue.concat(fresh);
+  officialPageToken = data.officialPageToken || null;
+  officialLoading = false;
+  // Keep the cached copy whole so the playlist "back" button restores everything.
+  if (lastResults) {
+    lastResults.official = (lastResults.official || []).concat(fresh);
+    lastResults.officialPageToken = officialPageToken;
+  }
+  if (officialQueue.length) { emptyPages = 0; revealOfficial(); return; }
+  if (officialPageToken && ++emptyPages <= MAX_EMPTY_PAGES) { requestMoreOfficial(); return; }
+  officialPageToken = null; // nothing left worth showing — retire the arrow
+  syncMoreBtn();
+}
+
+function requestMoreOfficial() {
+  officialLoading = true;
+  syncMoreBtn();
+  ipcRenderer.send('popup-search-request', { query: lastQuery, pageToken: officialPageToken });
+}
+
+function moreBtnEl() {
+  const b = document.createElement('button');
+  b.className = 'crt-more-btn';
+  b.id = 'official-more';
+  b.title = '공식 음원 더 보기';
+  b.innerHTML = CHEVRON_SVG;
+  b.addEventListener('click', () => {
+    if (officialLoading) return;
+    if (officialQueue.length) { revealOfficial(); return; }
+    if (!officialPageToken) return;
+    emptyPages = 0;
+    requestMoreOfficial();
+  });
+  return b;
+}
+
+function syncMoreBtn() {
+  const b = el('official-more');
+  if (!b) return;
+  const canMore = officialQueue.length > 0 || !!officialPageToken;
+  b.classList.toggle('hidden', !canMore);
+  b.disabled = officialLoading;
+  b.innerHTML = officialLoading ? '<div class="spinner spinner-sm"></div>' : CHEVRON_SVG;
 }
 
 function barEl(text) {
@@ -98,14 +194,14 @@ function videoCard(item, official) {
   return card;
 }
 
-function playlistCard(item) {
+function playlistCard(item, official) {
   const card = document.createElement('div');
   card.className = 'res-card';
-  card.title = '재생목록 열기';
+  card.title = official ? '앨범 열기' : '재생목록 열기';
   card.innerHTML = `
     <img class="res-thumb" src="${escHtml(item.thumb)}" alt="" loading="lazy">
     <div class="res-info">
-      <div class="res-title">${escHtml(item.title)}</div>
+      <div class="res-title">${escHtml(item.title)}${official ? '<span class="res-badge">공식</span>' : ''}</div>
       <div class="res-channel">${escHtml(item.channel)}</div>
     </div>
     <div class="res-btns">
