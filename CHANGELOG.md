@@ -12,6 +12,8 @@
     바뀌면(수정 시각·크기 기준) 다시 확인한다.
   - 같은 파일에 대한 중복 요청은 한 번으로 합친다.
 
+  자세한 조사 기록은 [docs/folder-playlist-cover-art-storm.md](docs/folder-playlist-cover-art-storm.md) 참고.
+
 ## 1.4.9 (2026-08-12)
 
 - **내 PC의 폴더를 재생목록으로 추가한다.** 재생목록 팝업의 `＋ 폴더` 버튼으로 폴더를
