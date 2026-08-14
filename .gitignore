@@ -5,7 +5,6 @@ dist/
 # ignore build/ contents (not the dir itself) so the NSIS source below can be kept
 build/*
 !build/installer.nsh
-docs/
 
 # Local Google OAuth credentials (bundled into builds, never in the repo)
 src/google-config.js
