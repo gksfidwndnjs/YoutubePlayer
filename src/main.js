@@ -614,30 +614,77 @@ ipcMain.handle('scan-folder-playlist', (_, dir) => {
 });
 
 // Embedded cover art, extracted on demand with the bundled ffmpeg and cached by file
-// path. Extraction takes a moment, so it never blocks playback — the renderer swaps the
-// art in when it arrives. Files with no art are remembered so ffmpeg isn't re-spawned
-// for them on every play.
-const coverMisses = new Set();
+// path. Extraction never blocks playback — the renderer swaps the art in when it
+// arrives.
+//
+// Discovering that a file has NO art costs a full ffmpeg run (~1.5s on a 3 MB mp3), and
+// whole genres of music — game soundtracks, ripped CDs — carry none at all. So:
+//   · a miss is recorded on disk, not just in memory, or every launch re-probes the
+//     entire folder;
+//   · only a couple of extractions run at a time. Firing one per track is what turned a
+//     351-track folder into 351 concurrent ffmpeg processes and locked up the machine.
+const COVER_MAX_CONCURRENT = 2;
+let coverActive = 0;
+const coverWaiting = [];
 
-ipcMain.handle('local-cover', async (_, file) => {
-  if (!file || coverMisses.has(file)) return null;
+function withCoverSlot(fn) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      coverActive++;
+      fn().then(resolve, reject).finally(() => {
+        coverActive--;
+        coverWaiting.shift()?.();
+      });
+    };
+    if (coverActive < COVER_MAX_CONCURRENT) run();
+    else coverWaiting.push(run);
+  });
+}
+
+// Both caches are invalidated by the file's own mtime+size, so replacing a track's file
+// re-probes it instead of serving the previous file's art (or its "no art" verdict).
+const coverStamp = (st) => `${Math.round(st.mtimeMs)}:${st.size}`;
+
+async function extractCover(file) {
+  let st;
+  try { st = fs.statSync(file); } catch { return null; }
+  const stamp = coverStamp(st);
   const dir = path.join(app.getPath('userData'), 'covers');
   const key = crypto.createHash('sha1').update(file.toLowerCase()).digest('hex');
-  const out = path.join(dir, `${key}.jpg`);
-  if (fs.existsSync(out)) return out;
+  const jpg = path.join(dir, `${key}.jpg`);
+  const miss = path.join(dir, `${key}.none`);
+
+  try { if (fs.readFileSync(`${jpg}.stamp`, 'utf8') === stamp && fs.existsSync(jpg)) return jpg; } catch {}
+  try { if (fs.readFileSync(miss, 'utf8') === stamp) return null; } catch {}
+
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-  const ok = await new Promise((resolve) => {
+  const ok = await withCoverSlot(() => new Promise((resolve) => {
     execFile(
       ffmpegPath,
-      ['-y', '-i', file, '-an', '-update', '1', '-frames:v', '1', out],
+      ['-y', '-i', file, '-an', '-update', '1', '-frames:v', '1', jpg],
       { windowsHide: true, timeout: 15000 },
       (err) => resolve(!err),
     );
-  });
-  if (ok && fs.existsSync(out)) return out;
-  coverMisses.add(file);
-  try { fs.unlinkSync(out); } catch {}
+  }));
+
+  if (ok && fs.existsSync(jpg)) {
+    try { fs.writeFileSync(`${jpg}.stamp`, stamp, 'utf8'); } catch {}
+    return jpg;
+  }
+  try { fs.unlinkSync(jpg); } catch {}
+  try { fs.writeFileSync(miss, stamp, 'utf8'); } catch {}
   return null;
+}
+
+// One extraction per file at a time, however many renders ask for it.
+const coverPending = new Map();
+
+ipcMain.handle('local-cover', (_, file) => {
+  if (!file) return null;
+  if (!coverPending.has(file)) {
+    coverPending.set(file, extractCover(file).finally(() => coverPending.delete(file)));
+  }
+  return coverPending.get(file);
 });
 
 // A music folder inside OneDrive is a trap: with Files On-Demand the downloaded

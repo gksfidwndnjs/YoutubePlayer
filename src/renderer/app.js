@@ -223,17 +223,18 @@ async function resolveAudioSrc(video) {
 }
 
 // Cover art for a folder track: embedded art extracted by the main process (cached on
-// disk). Resolves to null when the file carries none.
-const coverCache = new Map(); // localPath -> file URL | null
-async function localCoverUrl(localPath) {
-  if (coverCache.has(localPath)) return coverCache.get(localPath);
-  let url = null;
-  try {
-    const p = await ipcRenderer.invoke('local-cover', localPath);
-    if (p) url = fileUrl(p);
-  } catch {}
-  coverCache.set(localPath, url);
-  return url;
+// disk). Resolves to null when the file carries none. The map holds the promise, not the
+// result, so the repeated renders around startup share one request per file instead of
+// each queueing its own extraction.
+const coverCache = new Map(); // localPath -> Promise<file URL | null>
+
+function localCoverUrl(localPath) {
+  if (!coverCache.has(localPath)) {
+    coverCache.set(localPath, ipcRenderer.invoke('local-cover', localPath)
+      .then((p) => (p ? fileUrl(p) : null))
+      .catch(() => null));
+  }
+  return coverCache.get(localPath);
 }
 
 async function fetchVideoMeta(videoId) {
@@ -668,7 +669,29 @@ function refreshDownloadStates() {
   });
 }
 
+// Thumbnails for folder tracks are extracted lazily, one screenful at a time. While the
+// playlist panel is collapsed its scroll box has no height, so nothing intersects and no
+// extraction runs at all until the user actually opens the list.
+let thumbObserver = null;
+
+function observeThumb(img, localPath) {
+  if (!thumbObserver) {
+    thumbObserver = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        thumbObserver.unobserve(e.target);
+        const p = e.target.dataset.cover;
+        if (p) localCoverUrl(p).then((url) => { if (url) e.target.src = url; });
+      }
+    }, { root: el('queue-list'), rootMargin: '150px' });
+  }
+  img.dataset.cover = localPath;
+  thumbObserver.observe(img);
+}
+
 function renderQueue() {
+  // Drop the previous render's observations — those rows are about to be replaced.
+  thumbObserver?.disconnect();
   const pl = getActivePlaylist();
   const total = state.queue.length;
   const idx = state.currentIndex >= 0 ? state.currentIndex + 1 : 0;
@@ -712,12 +735,9 @@ function renderQueue() {
     });
     const dlBtn = card.querySelector('.download-btn');
     if (dlBtn) applyDownloadBtn(dlBtn, video);
-    // Folder tracks: fill the thumbnail in once their embedded art is extracted.
-    if (!video.videoId && video.localPath) {
-      localCoverUrl(video.localPath).then((url) => {
-        if (url) card.querySelector('.video-thumb').src = url;
-      });
-    }
+    // Folder tracks: extract the thumbnail only once the row is actually on screen.
+    // Asking for all of them up front means one ffmpeg run per track in the playlist.
+    if (!video.videoId && video.localPath) observeThumb(card.querySelector('.video-thumb'), video.localPath);
     list.appendChild(card);
   });
 }
