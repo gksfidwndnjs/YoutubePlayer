@@ -133,9 +133,9 @@ Metalwave for YouTube는 작업 중에 한쪽 구석에 띄워두고 쓰는 작�
 
 ## 설치
 
-[**Releases**](https://github.com/gksfidwndnjs/YoutubePlayer/releases/latest)에서
-**`Metalwave-Setup-x.y.z.exe`** 를 받아 실행하세요.
-(같이 올라온 `latest.yml`과 `.blockmap`은 앱의 자동 업데이트가 쓰는 파일이라 받지 않아도 됩니다.)
+[**Releases**](https://github.com/gksfidwndnjs/YoutubePlayer/releases/latest)의 **Assets**에서
+버전 번호가 붙은 **`Metalwave-Setup-1.4.10.exe`** 같은 파일을 받아 실행하세요.
+(함께 올라온 `latest.yml`과 `.blockmap`은 앱의 자동 업데이트가 쓰는 파일이라 받지 않아도 됩니다.)
 
 설치 과정은 세 단계입니다.
 
